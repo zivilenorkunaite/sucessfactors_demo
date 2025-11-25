@@ -908,7 +908,9 @@ def load_employees_from_data_product(generated_employees=None):
             F.coalesce(F.expr("try_cast(annualSalary as int)"), F.lit(DEFAULT_SALARY)).alias("base_salary"),  # Default to 0 if invalid
             F.coalesce(F.expr("try_cast(totalOrgTenureCalc / 30 as int)"), F.lit(DEFAULT_TENURE_MONTHS)).alias("tenure_months"),  # Default to 0 if invalid
             F.coalesce(F.expr("try_cast(totalPositionTenureCalc / 30 as int)"), F.lit(DEFAULT_TENURE_MONTHS)).alias("months_in_current_role"),  # Default to 0 if invalid
-            F.col("employmentStatus").alias("employment_status"),
+            # Normalize employment status: map 'A', 'ACTIVE', 'ACT' to 'Active' for consistency
+            F.when(F.upper(F.trim(F.col("employmentStatus"))).isin(['A', 'ACTIVE', 'ACT']), 'Active')
+             .otherwise(F.col("employmentStatus")).alias("employment_status"),
             F.lit("Unknown").alias("first_name"),
             F.lit("Unknown").alias("last_name")
         )

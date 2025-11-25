@@ -147,6 +147,7 @@ print(f"✅ Data loaded: {employees_df.count():,} employees, {performance_df.cou
 # Create comprehensive feature dataset for ML models
 
 # Employee base features
+# Filter for active employees - handle multiple status formats ('Active', 'A', 'ACTIVE', 'ACT')
 employee_features = employees_df.select(
     'employee_id',
     'age',
@@ -159,7 +160,9 @@ employee_features = employees_df.select(
     'base_salary',
     'tenure_months',
     'months_in_current_role'
-).filter(F.col('employment_status') == 'Active')
+).filter(
+    F.upper(F.trim(F.col('employment_status'))).isin(['ACTIVE', 'A', 'ACT'])
+)
 
 # Performance features (latest and trends)
 latest_performance = performance_df.withColumn(
