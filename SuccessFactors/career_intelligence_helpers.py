@@ -2490,23 +2490,22 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
                     'dept_salary_std': row['dept_salary_std'] or 0.0
                 }
         else:
-            # Group by numeric department code
-        # Use department_name if available, fallback to department code
-        dept_col = F.coalesce(F.col('department_name'), F.expr("try_cast(department as string)"))
-        dept_stats_df = employees_df.groupBy(dept_col.alias('department')).agg(
-            F.avg('base_salary').alias('dept_avg_salary'),
-            F.avg('performance_rating').alias('dept_avg_performance'),
-            F.avg('months_in_company').alias('dept_avg_tenure'),
-            F.stddev('base_salary').alias('dept_salary_std')
-        ).collect()
-        for row in dept_stats_df:
-            dept = row['department']
-            dept_stats_cache[dept] = {
-                'dept_avg_salary': row['dept_avg_salary'] or 0.0,
-                'dept_avg_performance': row['dept_avg_performance'] or 3.0,
-                'dept_avg_tenure': row['dept_avg_tenure'] or 12.0,
-                'dept_salary_std': row['dept_salary_std'] or 0.0
-            }
+            # Group by numeric department code - use department_name if available, fallback to department code
+            dept_col = F.coalesce(F.col('department_name'), F.expr("try_cast(department as string)"))
+            dept_stats_df = employees_df.groupBy(dept_col.alias('department')).agg(
+                F.avg('base_salary').alias('dept_avg_salary'),
+                F.avg('performance_rating').alias('dept_avg_performance'),
+                F.avg('months_in_company').alias('dept_avg_tenure'),
+                F.stddev('base_salary').alias('dept_salary_std')
+            ).collect()
+            for row in dept_stats_df:
+                dept = row['department']
+                dept_stats_cache[dept] = {
+                    'dept_avg_salary': row['dept_avg_salary'] or 0.0,
+                    'dept_avg_performance': row['dept_avg_performance'] or 3.0,
+                    'dept_avg_tenure': row['dept_avg_tenure'] or 12.0,
+                    'dept_salary_std': row['dept_salary_std'] or 0.0
+                }
         print(f"   ✅ Cached statistics for {len(dept_stats_cache)} departments")
     except Exception as e:
         print(f"   ⚠️ Could not cache department stats: {str(e)[:100]}")
