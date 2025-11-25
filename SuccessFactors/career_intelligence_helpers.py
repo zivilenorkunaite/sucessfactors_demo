@@ -543,11 +543,11 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
                 elif hasattr(impl, 'metadata') and impl.metadata:
                     if hasattr(impl.metadata, 'signature'):
                         signature = impl.metadata.signature
-                    elif hasattr(impl.metadata, 'get_signature'):
-                        try:
-                    signature = impl.metadata.get_signature()
-                        except:
-                            pass
+                elif hasattr(impl.metadata, 'get_signature'):
+                    try:
+                        signature = impl.metadata.get_signature()
+                    except:
+                        pass
             
             if signature and hasattr(signature, 'inputs') and signature.inputs:
                 expected_features_from_signature = [inp.name for inp in signature.inputs.inputs]
