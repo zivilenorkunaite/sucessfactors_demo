@@ -20,18 +20,15 @@
 
 # COMMAND ----------
 
-# Import configuration from setup module
-# This will set catalog_name and schema_name variables
-%run ./setup_config.py
+# Load configuration from app_config first
+# Use %run to execute app_config.py and make constants available
+%run ./app_config
 
 # COMMAND ----------
 
-# Import data product table names from app_config
-from app_config import (
-    EMPLOYEES_DATA_PRODUCT_TABLE,
-    PERFORMANCE_DATA_PRODUCT_TABLE,
-    LEARNING_DATA_PRODUCT_TABLE
-)
+# Import configuration from setup module
+# This will set catalog_name and schema_name variables
+%run ./setup_config.py
 
 # COMMAND ----------
 

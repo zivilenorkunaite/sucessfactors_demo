@@ -3,12 +3,12 @@ SAP Demo Configuration Module
 Unity Catalog setup and configuration for SAP Career Intelligence demo
 """
 
-# Import default configuration
-try:
-    from app_config import DEFAULT_CATALOG_NAME, DEFAULT_SCHEMA_NAME
-except ImportError:
-    # Fallback if app_config.py doesn't exist
+# Load default configuration from app_config
+# Note: app_config.py should be run via %run before this file
+# If app_config hasn't been loaded, use fallback values
+if 'DEFAULT_CATALOG_NAME' not in globals():
     DEFAULT_CATALOG_NAME = "demos"
+if 'DEFAULT_SCHEMA_NAME' not in globals():
     DEFAULT_SCHEMA_NAME = "career_path_temp"
 
 def setup_unity_catalog(catalog_name: str, schema_name: str):
