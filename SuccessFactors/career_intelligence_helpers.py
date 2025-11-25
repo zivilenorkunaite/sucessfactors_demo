@@ -673,9 +673,10 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
             )
     
     # Get actual categorical values from input
-    actual_gender = features_dict.get('gender', 'Male')
-    actual_dept = features_dict.get('department', 'Engineering')
-    actual_location = features_dict.get('location', 'Sydney')
+    # Handle both old keys (department, location) and new keys (department_name, location_name)
+    actual_gender = features_dict.get('gender', 'M')
+    actual_dept = features_dict.get('department_name') or features_dict.get('department', 'Engineering')
+    actual_location = features_dict.get('location_name') or features_dict.get('location', 'Australia')
     actual_emp_type = features_dict.get('employment_type', 'Full-time')
     actual_trend = features_dict.get('performance_trend', 'Stable')
     
@@ -698,10 +699,13 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
     # Build ALL possible features first (needed for signature-based filtering)
     all_features = {}
     
-    # Add all numeric features
+    # Add all numeric features (exclude raw name columns that should be encoded)
+    excluded_raw_cols = ['department_name', 'location_name', 'department', 'location', 'gender', 'employment_type', 'performance_trend']
     for feat in all_possible_numerics:
-        val = features_dict.get(feat, 0)
-        all_features[feat] = float(val) if val is not None else 0.0
+        # Skip raw categorical columns that should be encoded, not used directly
+        if feat not in excluded_raw_cols:
+            val = features_dict.get(feat, 0)
+            all_features[feat] = float(val) if val is not None else 0.0
     
     # Encode all possible categoricals
     # Match the exact format from model signature (e.g., gender_M, gender_F, gender_NB)
@@ -720,12 +724,52 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
                 all_features[col_name] = 1.0 if actual_gender_raw == val else 0.0
         elif col_name.startswith('department_'):
             dept_val = col_name.replace('department_', '')
-            # Compare as strings to handle both numeric codes (1034) and string names (Engineering)
-            all_features[col_name] = 1.0 if str(actual_dept_raw) == str(dept_val) else 0.0
+            # Convert department name to code if needed for comparison
+            dept_code_to_match = None
+            if actual_dept_raw.isdigit():
+                # Already a code
+                dept_code_to_match = actual_dept_raw
+            else:
+                # Try to convert name to code
+                try:
+                    from app_config import DEPARTMENT_CODE_TO_NAME
+                    for code, name in DEPARTMENT_CODE_TO_NAME.items():
+                        if name == actual_dept_raw:
+                            dept_code_to_match = str(code)
+                            break
+                except ImportError:
+                    pass
+            
+            # Compare: if we have a code, compare codes; otherwise compare strings
+            if dept_code_to_match:
+                all_features[col_name] = 1.0 if str(dept_val) == dept_code_to_match else 0.0
+            else:
+                # Fallback: string comparison
+                all_features[col_name] = 1.0 if str(actual_dept_raw) == str(dept_val) else 0.0
         elif col_name.startswith('location_'):
             loc_val = col_name.replace('location_', '')
-            # Compare as strings to handle both numeric codes (43) and string names (Sydney)
-            all_features[col_name] = 1.0 if str(actual_location_raw) == str(loc_val) else 0.0
+            # Convert location name to code if needed for comparison
+            loc_code_to_match = None
+            if actual_location_raw.isdigit():
+                # Already a code
+                loc_code_to_match = actual_location_raw
+            else:
+                # Try to convert name to code
+                try:
+                    from app_config import LOCATION_CODE_TO_NAME
+                    for code, name in LOCATION_CODE_TO_NAME.items():
+                        if name == actual_location_raw:
+                            loc_code_to_match = str(code)
+                            break
+                except ImportError:
+                    pass
+            
+            # Compare: if we have a code, compare codes; otherwise compare strings
+            if loc_code_to_match:
+                all_features[col_name] = 1.0 if str(loc_val) == loc_code_to_match else 0.0
+            else:
+                # Fallback: string comparison
+                all_features[col_name] = 1.0 if str(actual_location_raw) == str(loc_val) else 0.0
         elif col_name.startswith('employment_type_'):
             emp_val = col_name.replace('employment_type_', '')
             # Handle various employment type formats
