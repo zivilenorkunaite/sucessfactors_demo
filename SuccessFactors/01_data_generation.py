@@ -70,6 +70,8 @@ print("✅ Data generation environment ready")
 
 # COMMAND ----------
 
+# COMMAND ----------
+
 # ============================================================================
 # CONSTANTS & THRESHOLDS
 # ============================================================================
@@ -404,6 +406,8 @@ def generate_employees():
     return employees
 
 
+# COMMAND ----------
+
 def generate_performance_reviews(employees):
     """Generate performance review data based on employees"""
     random.seed(42)
@@ -507,6 +511,8 @@ def generate_performance_reviews(employees):
     
     return performance_reviews
 
+
+# COMMAND ----------
 
 def generate_learning_records(employees, performance_reviews):
     """Generate learning records based on employees and performance"""
@@ -635,6 +641,8 @@ def generate_learning_records(employees, performance_reviews):
     return learning_records
 
 
+# COMMAND ----------
+
 def generate_goals(employees, performance_reviews):
     """Generate goals data based on employees and performance"""
     random.seed(42)
@@ -720,6 +728,8 @@ def generate_goals(employees, performance_reviews):
     print("✅ Generated goals data")
     return goals
 
+
+# COMMAND ----------
 
 def generate_compensation(employees, performance_reviews):
     """Generate compensation history based on employees and performance"""
@@ -829,9 +839,13 @@ def generate_compensation(employees, performance_reviews):
     return compensation_history
 
 
+# COMMAND ----------
+
 # ============================================================================
 # HELPER FUNCTIONS FOR ENSURING COMPLETE DATA
 # ============================================================================
+
+# COMMAND ----------
 
 def generate_alex_employee_record():
     """
@@ -865,6 +879,8 @@ def generate_alex_employee_record():
         'manager_id': None
     }
 
+
+# COMMAND ----------
 
 def ensure_alex_in_employees_df(employees_df):
     """
@@ -975,6 +991,8 @@ def ensure_alex_in_employees_df(employees_df):
     
     return employees_df
 
+# COMMAND ----------
+
 def ensure_all_employees_have_performance_records(performance_df, employees_df, employees_list=None):
     """
     Ensure every employee has at least one performance record.
@@ -1068,6 +1086,8 @@ def ensure_all_employees_have_performance_records(performance_df, employees_df, 
     return performance_df
 
 
+# COMMAND ----------
+
 def ensure_all_employees_have_learning_records(learning_df, employees_df, employees_list=None, performance_reviews_list=None):
     """
     Ensure every employee has at least one learning record.
@@ -1151,9 +1171,13 @@ def ensure_all_employees_have_learning_records(learning_df, employees_df, employ
     return learning_df
 
 
+# COMMAND ----------
+
 # ============================================================================
 # DATA PRODUCT LOADING FUNCTIONS
 # ============================================================================
+
+# COMMAND ----------
 
 def load_employees_from_data_product(generated_employees=None):
     """
@@ -1571,6 +1595,8 @@ def load_employees_from_data_product(generated_employees=None):
         return employees_df, 'GENERATED'  # Return source indicator
 
 
+# COMMAND ----------
+
 def load_performance_from_data_product(generated_performance_reviews=None, employees=None, employees_df=None):
     """
     Load performance reviews from SAP SuccessFactors Data Product.
@@ -1677,6 +1703,8 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
         print(f"   📊 Final Status: Using GENERATED data (fallback)")
         return performance_df, 'GENERATED'  # Return source indicator
 
+
+# COMMAND ----------
 
 def load_learning_from_data_product(generated_learning_records=None, employees_df=None, employees_list=None, performance_reviews_df=None, performance_reviews_list=None):
     """
@@ -1994,6 +2022,8 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
 # MAIN DATA LOADING FUNCTION
 # ============================================================================
 
+# COMMAND ----------
+
 def _prepare_employees_df_for_generation(employees_df):
     """
     Prepare employees DataFrame for use in generation functions.
@@ -2023,6 +2053,8 @@ def _prepare_employees_df_for_generation(employees_df):
         traceback.print_exc()
         return None
 
+
+# COMMAND ----------
 
 def _collect_employees_list_if_needed(employees_df_prepared):
     """
