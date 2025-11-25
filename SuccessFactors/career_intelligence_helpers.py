@@ -2785,17 +2785,25 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
         # Ensure talent score is between 30 and 100
         talent_score = max(30.0, min(100.0, talent_score))
         
-        # Categorize talent
+        # Categorize talent with distinct, non-overlapping categories
         if potential_prob >= 0.8 and readiness_score >= 80:
+            # Highest tier: Both high potential AND ready now
             talent_category = 'Ready for Promotion'
-        elif potential_prob >= 0.75:
+        elif potential_prob >= 0.75 and readiness_score >= 70:
+            # High potential with good readiness
             talent_category = 'High Potential'
-        elif readiness_score >= 75:
+        elif readiness_score >= 75 and potential_prob >= 0.65:
+            # Ready now but lower potential
             talent_category = 'Promotion Ready'
-        elif performance_rating >= 4 and engagement_score >= 80:
+        elif performance_rating >= 4.0 and engagement_score >= 80:
+            # Strong performer but not yet ready/potential
             talent_category = 'Top Performer'
-        else:
+        elif performance_rating >= 3.5:
+            # Solid performer, developing
             talent_category = 'Developing'
+        else:
+            # Needs improvement
+            talent_category = 'Needs Development'
         
         # Create full name from first_name and last_name
         first_name = emp_dict.get('first_name', '')
