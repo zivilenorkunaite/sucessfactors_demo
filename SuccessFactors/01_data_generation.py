@@ -1675,14 +1675,56 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
             # No componentID and no learningItemName - use default
             learning_df_raw = learning_df_raw.withColumn("learningItemName", F.lit("Unknown Course"))
         
+        # Check for column existence before referencing them
+        available_cols = set(learning_df_raw.columns)
+        
+        # Check for userId column (required)
+        has_user_id = "userId" in available_cols or "userID" in available_cols
+        user_id_col = "userId" if "userId" in available_cols else ("userID" if "userID" in available_cols else None)
+        if not has_user_id:
+            raise ValueError("Required column 'userId' or 'userID' not found in learning data product")
+        
+        # Check for learningItemId
+        has_learning_item_id = "learningItemId" in available_cols or "learningItemID" in available_cols
+        learning_item_id_col = "learningItemId" if "learningItemId" in available_cols else ("learningItemID" if "learningItemID" in available_cols else None)
+        
+        # Check for completionDate
+        has_completion_date = "completionDate" in available_cols or "completion_date" in available_cols
+        completion_date_col = "completionDate" if "completionDate" in available_cols else ("completion_date" if "completion_date" in available_cols else None)
+        
+        # Check for hours columns (try multiple possible names)
+        has_hours_completed = "hoursCompleted" in available_cols
+        has_total_hours = "totalHours" in available_cols
+        has_cpe_hours = "cpeHours" in available_cols
+        hours_col = None
+        if has_hours_completed:
+            hours_col = "hoursCompleted"
+        elif has_total_hours:
+            hours_col = "totalHours"
+        elif has_cpe_hours:
+            hours_col = "cpeHours"
+        
+        # Check for score columns
+        has_score = "score" in available_cols
+        has_final_score = "finalScore" in available_cols
+        score_col = "score" if has_score else ("finalScore" if has_final_score else None)
+        
+        # Check for completionStatusId
+        has_completion_status_id = "completionStatusId" in available_cols or "completionStatusID" in available_cols
+        completion_status_id_col = "completionStatusId" if "completionStatusId" in available_cols else ("completionStatusID" if "completionStatusID" in available_cols else None)
+        
         # Map columns to expected names
         # Use try_cast to handle malformed values
         # Map completion status IDs to strings: "1"->Completed, "2"->In Progress, "3"->Not Started
         
         # Build completion status expression outside of select
-        completion_status_expr = (F.when(F.col("completionStatusId") == COMPLETION_STATUS_ID_COMPLETED, COMPLETION_STATUS_COMPLETED)
-         .when(F.col("completionStatusId") == COMPLETION_STATUS_ID_IN_PROGRESS, COMPLETION_STATUS_IN_PROGRESS)
-         .when(F.col("completionStatusId") == COMPLETION_STATUS_ID_NOT_STARTED, COMPLETION_STATUS_NOT_STARTED))
+        if has_completion_status_id and completion_status_id_col:
+            completion_status_expr = (F.when(F.col(completion_status_id_col) == COMPLETION_STATUS_ID_COMPLETED, COMPLETION_STATUS_COMPLETED)
+             .when(F.col(completion_status_id_col) == COMPLETION_STATUS_ID_IN_PROGRESS, COMPLETION_STATUS_IN_PROGRESS)
+             .when(F.col(completion_status_id_col) == COMPLETION_STATUS_ID_NOT_STARTED, COMPLETION_STATUS_NOT_STARTED))
+        else:
+            # Start with default if completionStatusId doesn't exist
+            completion_status_expr = F.lit(COMPLETION_STATUS_NOT_STARTED)
         
         # If completionStatus column exists, check for recognized codes
         if has_completion_status and completion_status_col:
@@ -1699,11 +1741,28 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
         
         completion_status_expr = completion_status_expr.otherwise(F.lit(COMPLETION_STATUS_NOT_STARTED)).alias("completion_status")
         
-        learning_df = learning_df_raw.select(
-            F.col("userId").alias("employee_id"),
-            F.coalesce(F.col("learningItemId"), F.concat(F.lit("LRN"), F.abs(F.hash(F.col("userId"))).cast("string"))).alias("learning_id"),
-            F.coalesce(F.col("learningItemName"), F.lit("Unknown Course")).alias("course_title"),
-            # Map category from keywords or use default
+        # Build select expressions with proper column existence checks
+        select_exprs = [
+            F.col(user_id_col).alias("employee_id"),
+        ]
+        
+        # learning_id
+        if has_learning_item_id and learning_item_id_col:
+            select_exprs.append(
+                F.coalesce(F.col(learning_item_id_col), F.concat(F.lit("LRN"), F.abs(F.hash(F.col(user_id_col))).cast("string"))).alias("learning_id")
+            )
+        else:
+            select_exprs.append(
+                F.concat(F.lit("LRN"), F.abs(F.hash(F.col(user_id_col))).cast("string")).alias("learning_id")
+            )
+        
+        # course_title
+        select_exprs.append(
+            F.coalesce(F.col("learningItemName"), F.lit("Unknown Course")).alias("course_title")
+        )
+        
+        # category (based on learningItemName)
+        select_exprs.append(
             F.when(F.lower(F.col("learningItemName")).rlike("technical|tech|programming|coding"), "Technical Skills")
              .when(F.lower(F.col("learningItemName")).rlike("leadership|manage|lead"), "Leadership")
              .when(F.lower(F.col("learningItemName")).rlike("communication|communicate|present"), "Communication")
@@ -1712,12 +1771,37 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
              .when(F.lower(F.col("learningItemName")).rlike("product|pm"), "Product Management")
              .when(F.lower(F.col("learningItemName")).rlike("sales|sell"), "Sales Training")
              .when(F.lower(F.col("learningItemName")).rlike("compliance|legal|policy"), "Compliance")
-             .otherwise("Technical Skills").alias("category"),
-            F.coalesce(F.expr("try_cast(completionDate as date)"), F.expr("try_cast(completionDate as date)"), F.current_date()).alias("completion_date"),
-            F.coalesce(F.expr("try_cast(hoursCompleted as int)"), F.expr("try_cast(totalHours as int)"), F.lit(0)).alias("hours_completed"),
-            completion_status_expr,
-            F.coalesce(F.expr("try_cast(score as int)"), F.expr("try_cast(finalScore as int)")).alias("score")
-        ).filter(F.col("userId").isNotNull())
+             .otherwise("Technical Skills").alias("category")
+        )
+        
+        # completion_date
+        if has_completion_date and completion_date_col:
+            select_exprs.append(
+                F.coalesce(F.expr(f"try_cast({completion_date_col} as date)"), F.current_date()).alias("completion_date")
+            )
+        else:
+            select_exprs.append(F.current_date().alias("completion_date"))
+        
+        # hours_completed
+        if hours_col:
+            select_exprs.append(
+                F.coalesce(F.expr(f"try_cast({hours_col} as int)"), F.lit(0)).alias("hours_completed")
+            )
+        else:
+            select_exprs.append(F.lit(0).alias("hours_completed"))
+        
+        # completion_status
+        select_exprs.append(completion_status_expr)
+        
+        # score
+        if score_col:
+            select_exprs.append(
+                F.coalesce(F.expr(f"try_cast({score_col} as int)"), F.lit(None).cast("int")).alias("score")
+            )
+        else:
+            select_exprs.append(F.lit(None).cast("int").alias("score"))
+        
+        learning_df = learning_df_raw.select(*select_exprs).filter(F.col(user_id_col).isNotNull())
         
         
         print("✅ Transformed learning data")

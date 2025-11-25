@@ -143,7 +143,9 @@ learning_df = spark.table(f"{catalog_name}.{schema_name}.learning")
 goals_df = spark.table(f"{catalog_name}.{schema_name}.goals")
 compensation_df = spark.table(f"{catalog_name}.{schema_name}.compensation")
 
-print(f"✅ Data loaded: {employees_df.count():,} employees, {performance_df.count():,} reviews")
+# Note: Removed .count() calls for serverless compute compatibility
+# Counts are expensive operations - remove or cache if needed
+print(f"✅ Data loaded from Unity Catalog tables")
 
 # COMMAND ----------
 
@@ -554,7 +556,7 @@ def train_classification_model_with_improvements(
                     max_features=trial.suggest_categorical('max_features', ['sqrt', 'log2', None]),
                     class_weight=trial.suggest_categorical('class_weight', ['balanced', None]),
                     random_state=42,
-                    n_jobs=-1
+                    n_jobs=1  # Changed from -1 for serverless compute compatibility
                 )
             elif best_name == 'LogisticRegression' and model_type == 'classifier':
                 penalty = trial.suggest_categorical('penalty', ['l1', 'l2', 'elasticnet'])
@@ -594,7 +596,7 @@ def train_classification_model_with_improvements(
             
             scores = cross_val_score(model, X_train, y_train, cv=cv_folds, 
                                    scoring='roc_auc' if model_type == 'classifier' else 'r2',
-                                   n_jobs=-1)
+                                   n_jobs=1)  # Changed from -1 for serverless compute compatibility
             return scores.mean()
         
         return objective
@@ -623,7 +625,7 @@ def train_classification_model_with_improvements(
     study.optimize(
         create_optuna_objective(X_train_selected, y_train, model_type, best_name, cv_folds),
         n_trials=n_trials,
-        show_progress_bar=True
+        show_progress_bar=False  # Changed to False for serverless compute compatibility
     )
     
     print(f"✅ Best parameters: {study.best_params}")
@@ -631,7 +633,7 @@ def train_classification_model_with_improvements(
     
     # Recreate best model with optimal parameters
     if best_name == 'RandomForest' and model_type == 'classifier':
-        model = RandomForestClassifier(**study.best_params, random_state=42, n_jobs=-1)
+        model = RandomForestClassifier(**study.best_params, random_state=42, n_jobs=1)  # Changed from -1 for serverless compute compatibility
     elif best_name == 'LogisticRegression' and model_type == 'classifier':
         # Ensure solver is set correctly for penalty type
         model_params = study.best_params.copy()
@@ -650,7 +652,7 @@ def train_classification_model_with_improvements(
         print("\n🔗 Building ensemble model (stacking)...")
         # Create base models for ensemble
         base_models = [
-            ('rf', RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42, n_jobs=-1)),
+            ('rf', RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42, n_jobs=1)),  # Changed from -1 for serverless compute compatibility
             ('gb', GradientBoostingClassifier(n_estimators=100, max_depth=6, random_state=42)),
             ('lr', LogisticRegression(random_state=42, max_iter=200))
         ]
@@ -660,15 +662,15 @@ def train_classification_model_with_improvements(
             estimators=base_models,
             final_estimator=LogisticRegression(random_state=42, max_iter=200),
             cv=3,
-            n_jobs=-1
+            n_jobs=1  # Changed from -1 for serverless compute compatibility
         )
         ensemble_model.fit(X_train_selected, y_train)
         
         # Compare ensemble vs single best model
         ensemble_score = cross_val_score(ensemble_model, X_train_selected, y_train, 
-                                        cv=cv_folds, scoring='roc_auc', n_jobs=-1).mean()
+                                        cv=cv_folds, scoring='roc_auc', n_jobs=1).mean()  # Changed from -1 for serverless compute compatibility
         single_score = cross_val_score(model, X_train_selected, y_train, 
-                                      cv=cv_folds, scoring='roc_auc', n_jobs=-1).mean()
+                                      cv=cv_folds, scoring='roc_auc', n_jobs=1).mean()  # Changed from -1 for serverless compute compatibility
         
         if ensemble_score > single_score:
             print(f"✅ Ensemble model performs better (AUC: {ensemble_score:.4f} vs {single_score:.4f}). Using ensemble.")
@@ -691,14 +693,14 @@ def train_classification_model_with_improvements(
             estimators=base_models,
             final_estimator=GradientBoostingRegressor(n_estimators=50, random_state=42),
             cv=3,
-            n_jobs=-1
+            n_jobs=1  # Changed from -1 for serverless compute compatibility
         )
         ensemble_model.fit(X_train_selected, y_train)
         
         ensemble_score = cross_val_score(ensemble_model, X_train_selected, y_train, 
-                                        cv=cv_folds, scoring='r2', n_jobs=-1).mean()
+                                        cv=cv_folds, scoring='r2', n_jobs=1).mean()  # Changed from -1 for serverless compute compatibility
         single_score = cross_val_score(model, X_train_selected, y_train, 
-                                      cv=cv_folds, scoring='r2', n_jobs=-1).mean()
+                                      cv=cv_folds, scoring='r2', n_jobs=1).mean()  # Changed from -1 for serverless compute compatibility
         
         if ensemble_score > single_score:
             print(f"✅ Ensemble model performs better (R²: {ensemble_score:.4f} vs {single_score:.4f}). Using ensemble.")
@@ -712,7 +714,7 @@ def train_classification_model_with_improvements(
     cv_scoring = 'roc_auc' if model_type == 'classifier' else 'r2'
     # Use calibrated model for CV if classification
     cv_model = calibrated_model if model_type == 'classifier' else model
-    cv_scores = cross_val_score(cv_model, X_train_selected, y_train, cv=cv_folds, scoring=cv_scoring, n_jobs=-1)
+    cv_scores = cross_val_score(cv_model, X_train_selected, y_train, cv=cv_folds, scoring=cv_scoring, n_jobs=1)  # Changed from -1 for serverless compute compatibility
     print(f"📈 CV {cv_scoring.upper()}: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
     
     # Make predictions
@@ -768,7 +770,7 @@ def train_classification_model_with_improvements(
     if SHAP_AVAILABLE and hasattr(model, 'feature_importances_') and model_type == 'classifier':
         print("🔍 Computing SHAP values...")
         try:
-            shap_sample_size = min(100, len(X_test_selected))
+            shap_sample_size = min(50, len(X_test_selected))  # Reduced from 100 for serverless compute compatibility
             shap_explainer = shap.TreeExplainer(model)
             shap_values = shap_explainer.shap_values(X_test_selected[:shap_sample_size])
             
@@ -849,9 +851,10 @@ def encode_categoricals(df, categorical_cols=['gender', 'department', 'location'
     
     for cat_col in categorical_cols:
         if cat_col in df.columns:
-            # Get distinct values
-            distinct_vals = [row[cat_col] for row in df.select(cat_col).distinct().collect() 
-                           if row[cat_col] is not None]
+            # Get distinct values using toPandas() instead of collect() for serverless compatibility
+            # This is more memory-efficient than collect()
+            distinct_df = df.select(cat_col).distinct().filter(F.col(cat_col).isNotNull())
+            distinct_vals = distinct_df.select(cat_col).toPandas()[cat_col].tolist()
             
             # Limit to reasonable number of categories
             max_cats = 10 if cat_col == 'gender' else (8 if cat_col == 'department' else 
@@ -1253,7 +1256,7 @@ try:
                 'max_features': ['sqrt', 'log2'],
                 'class_weight': ['balanced', None]
             },
-            'base_model': RandomForestClassifier(random_state=42, n_jobs=-1)
+            'base_model': RandomForestClassifier(random_state=42, n_jobs=1)  # Changed from -1 for serverless compute compatibility
         }
         
         # Train with all improvements using helper function
