@@ -330,7 +330,15 @@ master_features = master_features \
 
 print("✅ Master dataset created with advanced features")
 
-master_features.write.format("delta").mode("overwrite").saveAsTable(f"{catalog_name}.{schema_name}.master_features")
+# Ensure location column has consistent type (cast to integer if needed)
+# This prevents schema merge conflicts when overwriting the table
+master_features = master_features.withColumn(
+    "location",
+    F.coalesce(F.expr("try_cast(location as int)"), F.lit(0))
+)
+
+# Ensure consistent schema by overwriting schema if table exists
+master_features.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{catalog_name}.{schema_name}.master_features")
 
 # COMMAND ----------
 

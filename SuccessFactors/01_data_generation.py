@@ -1479,30 +1479,7 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
         
         print("✅ Successfully loaded performance records from DATA PRODUCT")
         print(f"   📦 Data Source: SAP SuccessFactors Data Product (Delta Sharing)")
-        
-        # Deduplicate: Keep only the latest review per employee_id based on reviewPeriodEndDt
-        if "reviewPeriodEndDt" in performance_df_raw.columns:
-            # Optimize window function: repartition by userId to ensure proper data distribution
-            # This reduces shuffling during window operation and improves performance
-            default_partitions = int(spark.conf.get("spark.sql.shuffle.partitions", "200"))
-            num_partitions = max(1, min(200, default_partitions))
-            performance_df_raw = performance_df_raw.repartition(num_partitions, "userId")
-            
-            # Use window function to rank records by reviewPeriodEndDt, keeping latest (descending order)
-            # Handle NULL dates by putting them last (using coalesce with a very old date)
-            # Partitioning by userId ensures all records for same user are on same partition
-            # This eliminates cross-partition shuffling during window operation
-            window_spec = Window.partitionBy("userId").orderBy(
-                F.coalesce(F.col("reviewPeriodEndDt"), F.lit("1900-01-01").cast("date")).desc()
-            )
-            performance_df_raw = performance_df_raw.withColumn("row_num", F.row_number().over(window_spec)) \
-                                                 .filter(F.col("row_num") == 1) \
-                                                 .drop("row_num")
-            
-            # Coalesce after deduplication to reduce partition count (we have fewer rows now)
-            # This improves performance for subsequent operations
-            performance_df_raw = performance_df_raw.coalesce(max(1, num_partitions // 2))
-            print("   ✅ Deduplicated performance reviews (kept latest per employee)")
+        print("   ℹ️ Keeping all performance records per employee (no deduplication)")
         
         # Map columns to expected names
         # Use try_cast to handle malformed values
