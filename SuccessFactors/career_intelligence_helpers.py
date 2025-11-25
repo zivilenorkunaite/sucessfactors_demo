@@ -2816,7 +2816,7 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
         #    → Ready now with high growth potential (best candidates for advancement)
         # 2. "High Potential": potential >= 75% AND readiness 70-79
         #    → High future potential but needs more development before promotion
-        # 3. "Promotion Eligible": readiness >= 75 AND potential < 75%
+        # 3. "Steady Performer": readiness >= 75 AND potential < 75%
         #    → Ready for promotion but limited growth potential (steady performers)
         # 4. "Top Performer": performance >= 4.0 AND engagement >= 80 AND readiness < 75
         #    → Excellent current performance but not ready for promotion yet
