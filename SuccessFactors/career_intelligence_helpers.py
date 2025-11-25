@@ -520,12 +520,18 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
             # Try multiple ways to access signature
             signature = None
             
-            # Method 1: Try PyFuncModel.metadata.get_signature()
+            # Method 1: Try PyFuncModel.metadata.signature (direct attribute)
             if isinstance(model, PyFuncModel):
                 if hasattr(model, 'metadata') and model.metadata:
-                    signature = model.metadata.get_signature()
+                    if hasattr(model.metadata, 'signature'):
+                        signature = model.metadata.signature
+                    elif hasattr(model.metadata, 'get_signature'):
+                        try:
+                            signature = model.metadata.get_signature()
+                        except:
+                            pass
             
-            # Method 2: Try direct signature attribute
+            # Method 2: Try direct signature attribute on model
             if signature is None and hasattr(model, 'signature'):
                 signature = model.signature
             
@@ -535,7 +541,13 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
                 if hasattr(impl, 'signature'):
                     signature = impl.signature
                 elif hasattr(impl, 'metadata') and impl.metadata:
-                    signature = impl.metadata.get_signature()
+                    if hasattr(impl.metadata, 'signature'):
+                        signature = impl.metadata.signature
+                    elif hasattr(impl.metadata, 'get_signature'):
+                        try:
+                            signature = impl.metadata.get_signature()
+                        except:
+                            pass
             
             if signature and hasattr(signature, 'inputs') and signature.inputs:
                 expected_features_from_signature = [inp.name for inp in signature.inputs.inputs]
@@ -917,8 +929,15 @@ def ensure_dataframe_schema(features_df, model):
         # Try multiple methods to get signature
         if isinstance(model, PyFuncModel) and hasattr(model, 'metadata') and model.metadata:
             try:
-                signature = model.metadata.get_signature()
-                if signature and signature.inputs:
+                # Try direct attribute first
+                if hasattr(model.metadata, 'signature'):
+                    signature = model.metadata.signature
+                elif hasattr(model.metadata, 'get_signature'):
+                    signature = model.metadata.get_signature()
+                else:
+                    signature = None
+                
+                if signature and hasattr(signature, 'inputs') and signature.inputs:
                     expected_cols = [inp.name for inp in signature.inputs.inputs]
             except Exception:
                 pass
@@ -1004,8 +1023,15 @@ def explain_prediction(employee_id, model_name, career_models, employees_df,
     try:
         from mlflow.pyfunc import PyFuncModel
         if isinstance(model_pipeline, PyFuncModel) and hasattr(model_pipeline, 'metadata') and model_pipeline.metadata:
-            signature = model_pipeline.metadata.get_signature()
-            if signature and signature.inputs:
+            # Try direct attribute first
+            if hasattr(model_pipeline.metadata, 'signature'):
+                signature = model_pipeline.metadata.signature
+            elif hasattr(model_pipeline.metadata, 'get_signature'):
+                signature = model_pipeline.metadata.get_signature()
+            else:
+                signature = None
+            
+            if signature and hasattr(signature, 'inputs') and signature.inputs:
                 feature_names = [inp.name for inp in signature.inputs.inputs]
     except Exception:
         pass
@@ -2056,14 +2082,33 @@ def generate_career_predictions(employee_data,career_models,employees_df,display
                 if isinstance(career_models['career_success'], PyFuncModel):
                     print(f"DEBUG: Has metadata: {hasattr(career_models['career_success'], 'metadata')}")
                     if hasattr(career_models['career_success'], 'metadata') and career_models['career_success'].metadata:
-                        signature = career_models['career_success'].metadata.get_signature()
+                        # Try direct attribute first
+                        if hasattr(career_models['career_success'].metadata, 'signature'):
+                            signature = career_models['career_success'].metadata.signature
+                            print(f"DEBUG: Got signature via metadata.signature")
+                        elif hasattr(career_models['career_success'].metadata, 'get_signature'):
+                            try:
+                                signature = career_models['career_success'].metadata.get_signature()
+                                print(f"DEBUG: Got signature via metadata.get_signature()")
+                            except Exception as e2:
+                                print(f"DEBUG: get_signature() failed: {str(e2)[:100]}")
+                                signature = None
+                        else:
+                            signature = None
+                            print(f"DEBUG: metadata has no signature attribute")
+                        
                         print(f"DEBUG: Signature extracted: {signature is not None}")
-                        if signature and signature.inputs:
-                            expected_cols_from_signature = [inp.name for inp in signature.inputs.inputs]
-                            print(f"DEBUG: expected_cols_from_signature has {len(expected_cols_from_signature)} columns")
-                            print(f"DEBUG: First 10 expected cols: {expected_cols_from_signature[:10]}")
+                        if signature:
+                            if hasattr(signature, 'inputs') and signature.inputs:
+                                expected_cols_from_signature = [inp.name for inp in signature.inputs.inputs]
+                                print(f"DEBUG: expected_cols_from_signature has {len(expected_cols_from_signature)} columns")
+                                print(f"DEBUG: First 10 expected cols: {expected_cols_from_signature[:10]}")
+                            else:
+                                print(f"DEBUG: Signature has no inputs attribute")
             except Exception as e:
                 print(f"DEBUG: Exception extracting signature: {str(e)[:200]}")
+                import traceback
+                print(f"DEBUG: Traceback: {traceback.format_exc()[:500]}")
                 pass
             
             # Create DataFrame with only expected columns from signature
@@ -2431,8 +2476,15 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
         from mlflow.pyfunc import PyFuncModel
         if reference_model and isinstance(reference_model, PyFuncModel):
             if hasattr(reference_model, 'metadata') and reference_model.metadata:
-                signature = reference_model.metadata.get_signature()
-                if signature and signature.inputs:
+                # Try direct attribute first
+                if hasattr(reference_model.metadata, 'signature'):
+                    signature = reference_model.metadata.signature
+                elif hasattr(reference_model.metadata, 'get_signature'):
+                    signature = reference_model.metadata.get_signature()
+                else:
+                    signature = None
+                
+                if signature and hasattr(signature, 'inputs') and signature.inputs:
                     expected_cols = [inp.name for inp in signature.inputs.inputs]
     except Exception:
         pass  # If signature extraction fails, we'll use all available columns
