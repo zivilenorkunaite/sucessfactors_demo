@@ -26,6 +26,15 @@
 
 # COMMAND ----------
 
+# Import data product table names from app_config
+from app_config import (
+    EMPLOYEES_DATA_PRODUCT_TABLE,
+    PERFORMANCE_DATA_PRODUCT_TABLE,
+    LEARNING_DATA_PRODUCT_TABLE
+)
+
+# COMMAND ----------
+
 !pip install Faker
 
 
@@ -880,8 +889,28 @@ def ensure_alex_in_employees_df(employees_df):
     else:
         print(f"   ➕ Adding Alex Smith demo record (employee_id: {ALEX_EMPLOYEE_ID})...")
     
-    # Create Alex's DataFrame
-    alex_df = spark.createDataFrame([alex_record]).select(
+    # Create Alex's DataFrame - only include fields that are in the final schema
+    # Exclude hire_date, current_job_start_date, and manager_id as they're not in employees DataFrame
+    alex_record_for_df = {
+        'employee_id': str(alex_record['employee_id']),
+        'person_id': str(alex_record['person_id']),
+        'age': int(alex_record['age']),
+        'gender': str(alex_record['gender']),
+        'department': str(alex_record['department']),
+        'job_title': str(alex_record['job_title']),
+        'job_level': int(alex_record['job_level']),
+        'location': str(alex_record['location']),
+        'employment_type': str(alex_record['employment_type']),
+        'base_salary': int(alex_record['base_salary']),
+        'tenure_months': int(alex_record['tenure_months']),
+        'months_in_current_role': int(alex_record['months_in_current_role']),
+        'employment_status': str(alex_record['employment_status']),
+        'first_name': str(alex_record['first_name']),
+        'last_name': str(alex_record['last_name'])
+    }
+    
+    # Create DataFrame - explicit type casting ensures schema compatibility
+    alex_df = spark.createDataFrame([alex_record_for_df]).select(
         F.col("employee_id").alias("employee_id"),
         F.col("person_id").alias("person_id"),
         F.col("age").cast("integer").alias("age"),
@@ -1075,11 +1104,10 @@ def load_employees_from_data_product(generated_employees=None):
         Spark DataFrame with employees data (from DP or generated)
     """
     print("📊 Loading employees from SAP SuccessFactors Data Product...")
-    print("   Source: core_workforce_data_dp.coreworkforcedata.coreworkforce_standardfields")
+    print(f"   Source: {EMPLOYEES_DATA_PRODUCT_TABLE}")
     try:
-        # exclude demo ID just in case it exists already
         employees_df_raw = spark.sql(
-            "SELECT * FROM core_workforce_data_dp.coreworkforcedata.coreworkforce_standardfields"
+            f"SELECT * FROM {EMPLOYEES_DATA_PRODUCT_TABLE}"
         )
         
         
@@ -1321,10 +1349,10 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
         Spark DataFrame with performance reviews data (from DP or generated)
     """
     print("📊 Loading performance reviews from SAP SuccessFactors Data Product...")
-    print("   Source: performance_data_dp.performancedata.performancedata")
+    print(f"   Source: {PERFORMANCE_DATA_PRODUCT_TABLE}")
     try:
         performance_df_raw = spark.sql(
-            "SELECT * FROM performance_data_dp.performancedata.performancedata"
+            f"SELECT * FROM {PERFORMANCE_DATA_PRODUCT_TABLE}"
         )
         
         
@@ -1464,10 +1492,10 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
         Spark DataFrame with learning records data (from DP or generated)
     """
     print("📊 Loading learning records from SAP SuccessFactors Data Product...")
-    print("   Source: learning_history_dp.learninghistory.learningcompletion")
+    print(f"   Source: {LEARNING_DATA_PRODUCT_TABLE}")
     try:
         learning_df_raw = spark.sql(
-            "SELECT * FROM learning_history_dp.learninghistory.learningcompletion"
+            f"SELECT * FROM {LEARNING_DATA_PRODUCT_TABLE}"
         )
         
         
