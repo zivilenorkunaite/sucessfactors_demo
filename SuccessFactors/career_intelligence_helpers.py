@@ -813,7 +813,7 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
             elif emp_val in ['Full_time', 'Full-time', 'Full time'] and mapped_emp_type in ['Full_time', 'Full-time', 'Full time']:
                 all_features[col_name] = 1.0
             else:
-            all_features[col_name] = 1.0 if mapped_emp_type == emp_val else 0.0
+                all_features[col_name] = 1.0 if mapped_emp_type == emp_val else 0.0
         elif col_name.startswith('performance_trend_'):
             trend_val = col_name.replace('performance_trend_', '')
             # Handle trend normalization
@@ -933,12 +933,15 @@ def ensure_dataframe_schema(features_df, model):
                 if hasattr(model.metadata, 'signature'):
                     signature = model.metadata.signature
                 elif hasattr(model.metadata, 'get_signature'):
-            signature = model.metadata.get_signature()
+                    try:
+                        signature = model.metadata.get_signature()
+                    except:
+                        signature = None
                 else:
                     signature = None
                 
                 if signature and hasattr(signature, 'inputs') and signature.inputs:
-                expected_cols = [inp.name for inp in signature.inputs.inputs]
+                    expected_cols = [inp.name for inp in signature.inputs.inputs]
             except Exception:
                 pass
         
@@ -963,7 +966,7 @@ def ensure_dataframe_schema(features_df, model):
             features_df = pd.DataFrame([result_dict], columns=expected_cols)
             
             # Ensure all values are numeric (convert if needed)
-                for col in expected_cols:
+            for col in expected_cols:
                 if features_df[col].dtype == 'object':
                     # Try to convert to numeric
                     features_df[col] = pd.to_numeric(features_df[col], errors='coerce').fillna(0.0)
@@ -1027,7 +1030,10 @@ def explain_prediction(employee_id, model_name, career_models, employees_df,
             if hasattr(model_pipeline.metadata, 'signature'):
                 signature = model_pipeline.metadata.signature
             elif hasattr(model_pipeline.metadata, 'get_signature'):
-            signature = model_pipeline.metadata.get_signature()
+                try:
+                    signature = model_pipeline.metadata.get_signature()
+                except:
+                    signature = None
             else:
                 signature = None
             
@@ -1701,9 +1707,9 @@ def get_demo_employee_data(employees_df, displayHTML):
 
     # If not found by ID, try by name
     if not alex_data:
-    alex_data = employees_df.filter(
-        (F.col("first_name") == "Alex") & (F.col("last_name") == "Smith")
-    ).collect()
+        alex_data = employees_df.filter(
+            (F.col("first_name") == "Alex") & (F.col("last_name") == "Smith")
+        ).collect()
 
     # try to get example from our Success Factors DP
     if not alex_data:
@@ -2581,7 +2587,10 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
                 if hasattr(reference_model.metadata, 'signature'):
                     signature = reference_model.metadata.signature
                 elif hasattr(reference_model.metadata, 'get_signature'):
-                signature = reference_model.metadata.get_signature()
+                    try:
+                        signature = reference_model.metadata.get_signature()
+                    except:
+                        signature = None
                 else:
                     signature = None
                 
@@ -2806,10 +2815,7 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
             talent_category = 'Ready for Promotion'
         elif readiness_score >= 75:
             # Ready now - prioritize this over potential/performance
-            if potential_prob >= 0.70:
-            talent_category = 'Promotion Ready'
-        else:
-                talent_category = 'Promotion Ready'  # Still ready even if lower potential
+            talent_category = 'Promotion Ready'  # Ready regardless of potential
         elif potential_prob >= 0.75:
             # High potential but not quite ready yet
             talent_category = 'High Potential'
