@@ -321,8 +321,7 @@ def prepare_ml_features_for_prediction(emp_dict, employees_df, spark, catalog_na
         salary_growth_rate = 0.0
     salary_growth_rate = float(salary_growth_rate)
     
-    # Get department - prefer department_name if available, otherwise use department
-    department = emp_dict.get('department_name') or emp_dict.get('department', 'Engineering')
+    department = emp_dict.get('department_name', 'Engineering')
     
     # Compute department-level aggregates from employees_df
     # Handle both department name (string) and department code (numeric)
@@ -493,9 +492,9 @@ def prepare_ml_features_for_prediction(emp_dict, employees_df, spark, catalog_na
         'salary_per_month_tenure': salary_per_month_tenure,
         'performance_x_tenure': performance_x_tenure,
         'performance_x_salary_growth': performance_x_salary_growth,
-        'gender': emp_dict.get('gender', 'Male'),
+        'gender': emp_dict.get('gender', 'M'),
         'department': department,
-        'location': emp_dict.get('location', 'Sydney'),
+        'location': emp_dict.get('location_name', 'Australia'),
         'employment_type': emp_dict.get('employment_type', 'Full-time'),
         'performance_trend': emp_dict.get('performance_trend', 'Stable')
     }
