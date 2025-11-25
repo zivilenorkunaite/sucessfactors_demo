@@ -321,7 +321,8 @@ def prepare_ml_features_for_prediction(emp_dict, employees_df, spark, catalog_na
         salary_growth_rate = 0.0
     salary_growth_rate = float(salary_growth_rate)
     
-    department = emp_dict.get('department', 'Engineering')
+    # Get department - prefer department_name if available, otherwise use department
+    department = emp_dict.get('department_name') or emp_dict.get('department', 'Engineering')
     
     # Compute department-level aggregates from employees_df
     # Handle both department name (string) and department code (numeric)
@@ -329,9 +330,26 @@ def prepare_ml_features_for_prediction(emp_dict, employees_df, spark, catalog_na
         # Check if department_name column exists (preferred)
         has_dept_name_col = 'department_name' in employees_df.columns
         
-        if has_dept_name_col:
-            # Use department_name column for filtering
+        # Check if department is a string (name) or numeric (code)
+        is_dept_string = isinstance(department, str) and not department.isdigit()
+        
+        if has_dept_name_col and is_dept_string:
+            # Use department_name column for filtering when we have a string name
             dept_filter = F.col('department_name') == department
+        elif has_dept_name_col and not is_dept_string:
+            # We have a numeric code but department_name column exists - need to convert
+            # Try to find department_name that matches this code
+            try:
+                from app_config import DEPARTMENT_CODE_TO_NAME
+                dept_name = DEPARTMENT_CODE_TO_NAME.get(int(department), None)
+                if dept_name:
+                    dept_filter = F.col('department_name') == dept_name
+                else:
+                    # Fallback to numeric comparison on department column
+                    dept_filter = F.col('department') == int(department)
+            except (ImportError, ValueError, TypeError):
+                # Fallback to numeric comparison
+                dept_filter = F.col('department') == int(department)
         else:
             # Convert department name to code if needed, or use as-is if already numeric
             # Try to convert department name to code using reverse mapping
@@ -2218,20 +2236,39 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
     print("   🔄 Pre-computing department statistics for faster processing...")
     dept_stats_cache = {}
     try:
-        dept_stats_df = employees_df.groupBy('department').agg(
-            F.avg('base_salary').alias('dept_avg_salary'),
-            F.avg('performance_rating').alias('dept_avg_performance'),
-            F.avg('months_in_company').alias('dept_avg_tenure'),
-            F.stddev('base_salary').alias('dept_salary_std')
-        ).collect()
-        for row in dept_stats_df:
-            dept = row['department']
-            dept_stats_cache[dept] = {
-                'dept_avg_salary': row['dept_avg_salary'] or 0.0,
-                'dept_avg_performance': row['dept_avg_performance'] or 3.0,
-                'dept_avg_tenure': row['dept_avg_tenure'] or 12.0,
-                'dept_salary_std': row['dept_salary_std'] or 0.0
-            }
+        # Use department_name if available, otherwise use department (numeric code)
+        if 'department_name' in employees_df.columns:
+            # Group by department_name for string-based lookup
+            dept_stats_df = employees_df.groupBy('department_name').agg(
+                F.avg('base_salary').alias('dept_avg_salary'),
+                F.avg('performance_rating').alias('dept_avg_performance'),
+                F.avg('months_in_company').alias('dept_avg_tenure'),
+                F.stddev('base_salary').alias('dept_salary_std')
+            ).collect()
+            for row in dept_stats_df:
+                dept = row['department_name']
+                dept_stats_cache[dept] = {
+                    'dept_avg_salary': row['dept_avg_salary'] or 0.0,
+                    'dept_avg_performance': row['dept_avg_performance'] or 3.0,
+                    'dept_avg_tenure': row['dept_avg_tenure'] or 12.0,
+                    'dept_salary_std': row['dept_salary_std'] or 0.0
+                }
+        else:
+            # Group by numeric department code
+            dept_stats_df = employees_df.groupBy('department').agg(
+                F.avg('base_salary').alias('dept_avg_salary'),
+                F.avg('performance_rating').alias('dept_avg_performance'),
+                F.avg('months_in_company').alias('dept_avg_tenure'),
+                F.stddev('base_salary').alias('dept_salary_std')
+            ).collect()
+            for row in dept_stats_df:
+                dept = row['department']
+                dept_stats_cache[dept] = {
+                    'dept_avg_salary': row['dept_avg_salary'] or 0.0,
+                    'dept_avg_performance': row['dept_avg_performance'] or 3.0,
+                    'dept_avg_tenure': row['dept_avg_tenure'] or 12.0,
+                    'dept_salary_std': row['dept_salary_std'] or 0.0
+                }
         print(f"   ✅ Cached statistics for {len(dept_stats_cache)} departments")
     except Exception as e:
         print(f"   ⚠️ Could not cache department stats: {str(e)[:100]}")
