@@ -737,8 +737,8 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
     for feat in numerics_to_include:
         # Skip raw categorical columns that should be encoded, not used directly
         if feat not in excluded_raw_cols:
-        val = features_dict.get(feat, 0)
-        all_features[feat] = float(val) if val is not None else 0.0
+            val = features_dict.get(feat, 0)
+            all_features[feat] = float(val) if val is not None else 0.0
     
     # Encode all possible categoricals
     # Match the exact format from model signature (e.g., gender_M, gender_F, gender_NB)
