@@ -244,6 +244,7 @@ def generate_employees():
     
     # Realistic organizational data matching SAP SuccessFactors structure - Australia focused
     departments = ['Engineering', 'Product', 'Sales', 'Marketing', 'Finance', 'HR', 'Operations', 'Legal']
+    departments = [1034, 1035, 1036, 1037, 1038, 1039, 1040, 1041]
     locations = ['Sydney', 'Melbourne', 'Brisbane', 'Perth', 'Adelaide']  # Australian cities
     job_families = {
         'Engineering': ['Software Engineer', 'Senior Software Engineer', 'Staff Engineer', 'Engineering Manager', 'Director Engineering'],
@@ -272,7 +273,7 @@ def generate_employees():
         'age': 32,
         'hire_date': alex_hire_date,
         'current_job_start_date': alex_job_start,
-        'department': 'Engineering',
+        'department': 1034, #'Engineering',
         'job_title': 'Software Engineer',
         'job_level': 1,
         'location': 'Sydney',
@@ -295,7 +296,7 @@ def generate_employees():
                 employee_id += 1
             
             # Demographics
-            gender = random.choices(['Male', 'Female', 'Non-binary'], weights=[48, 48, 4])[0]
+            gender = random.choices(['M', 'F', 'NB'], weights=[48, 48, 4])[0]
             age = random.randint(22, 62)
             
             # Employment details
@@ -388,7 +389,7 @@ def generate_employees():
     # Ensure Alex has a manager
     for emp in employees:
         if emp['employee_id'] == ALEX_EMPLOYEE_ID and not emp.get('manager_id'):
-            eng_managers = [e['employee_id'] for e in employees if e['department'] == 'Engineering' and e['job_level'] >= MIN_MANAGER_LEVEL]
+            eng_managers = [e['employee_id'] for e in employees if e['department'] == 1034 and e['job_level'] >= MIN_MANAGER_LEVEL]
             if eng_managers:
                 emp['manager_id'] = random.choice(eng_managers)
     
@@ -563,7 +564,7 @@ def generate_learning_records(employees, performance_reviews):
             relevant_categories = learning_categories.copy()
             if emp['job_level'] >= MIN_MANAGER_LEVEL:
                 relevant_categories.extend(['Leadership', 'Strategic Planning'])
-            if emp['department'] == 'Engineering':
+            if emp['department'] == 1034: #'Engineering':
                 relevant_categories.extend(['Technical Skills', 'Data Analysis'])
             
             for activity_num in range(num_activities):
@@ -846,14 +847,14 @@ def generate_alex_employee_record():
         'person_id': f'PER{alex_id + 50000}',
         'first_name': 'Alex',
         'last_name': 'Smith',
-        'gender': 'Female',
+        'gender': 'F',
         'age': 32,
         'hire_date': alex_hire_date,
         'current_job_start_date': alex_job_start,
-        'department': 'Engineering',
+        'department': 1034, #'Engineering',
         'job_title': 'Software Engineer',
         'job_level': 1,
-        'location': 'Sydney',
+        'location':  43, #'Sydney',
         'employment_status': 'Active',
         'employment_type': 'Full-time',
         'base_salary': 110000,  # AUD - Sydney Software Engineer rate
@@ -1159,6 +1160,21 @@ def load_employees_from_data_product(generated_employees=None):
         # Format: PER{employee_id_number + 50000} to match generated data pattern
         has_person_id_col = "personId" in employees_df_raw.columns
         
+        # Check which columns exist before referencing them
+        available_cols = set(employees_df_raw.columns)
+        has_age = "age" in available_cols
+        has_gender = "gender" in available_cols
+        has_department = "department" in available_cols
+        has_jobTitle = "jobTitle" in available_cols
+        has_location = "location" in available_cols
+        has_employmentType = "employmentType" in available_cols
+        has_annualSalary = "annualSalary" in available_cols
+        has_minimumPay = "minimumPay" in available_cols
+        has_maximumPay = "maximumPay" in available_cols
+        has_totalOrgTenureCalc = "totalOrgTenureCalc" in available_cols
+        has_totalPositionTenureCalc = "totalPositionTenureCalc" in available_cols
+        has_employmentStatus = "employmentStatus" in available_cols
+        
         if has_person_id_col:
             person_id_expr = F.coalesce(
                 F.col("personId"),
@@ -1184,40 +1200,121 @@ def load_employees_from_data_product(generated_employees=None):
                 F.concat(F.lit("PER"), F.abs(F.hash(F.col("userId"))).cast("string"))
             )
         
-        employees_df = employees_df_raw.select(
+        # Build select expressions, only referencing columns that exist
+        select_exprs = [
             F.col("userId").alias("employee_id"),
             person_id_expr.alias("person_id"),
-            F.coalesce(F.expr("try_cast(age as int)"), F.lit(DEFAULT_AGE)).alias("age"),  # Default to 30 if invalid
-            F.col("gender").alias("gender"),
-            F.col("department").alias("department"),
-            F.col("jobTitle").alias("job_title"),
-            F.when(F.col("jobTitle").rlike(JOB_TITLE_PATTERN_SENIOR), 3)
-             .when(F.col("jobTitle").rlike(JOB_TITLE_PATTERN_MID), 2)
-             .otherwise(1).alias("job_level"),
-            F.col("location").alias("location"),
-            # Map employment type codes to strings: 3631->Full-time, 3637->Part-time, 3638->Contract, others->Other
-            # Use try_cast to handle cases where employmentType might be string or null
-            # Cast once and reuse to avoid multiple try_cast calls
-            F.when(F.expr("try_cast(employmentType as int)") == 3631, "Full-time")
-             .when(F.expr("try_cast(employmentType as int)") == 3637, "Part-time")
-             .when(F.expr("try_cast(employmentType as int)") == 3638, "Contract")
-             .when(F.col("employmentType").isNull(), DEFAULT_EMPLOYMENT_TYPE)  # Explicit NULL handling
-             .otherwise(DEFAULT_EMPLOYMENT_TYPE).alias("employment_type"),
-            F.when(
-                F.col("annualSalary").isNotNull(),
-                F.expr("try_cast(annualSalary as int)")
-            ).when(
-                (F.col("minimumPay").isNotNull()) & (F.col("maximumPay").isNotNull()),
-                F.expr("cast(floor(rand() * (try_cast(maximumPay as int) - try_cast(minimumPay as int) + 1)) + try_cast(minimumPay as int) as int)")
-            ).otherwise(F.lit(DEFAULT_SALARY)).alias("base_salary"),
-            F.coalesce(F.expr("try_cast(totalOrgTenureCalc as int)"), F.lit(DEFAULT_TENURE_MONTHS)).alias("tenure_months"),  # Default to 0 if invalid
-            F.coalesce(F.expr("try_cast(totalPositionTenureCalc  as int)"), F.lit(DEFAULT_TENURE_MONTHS)).alias("months_in_current_role"),  # Default to 0 if invalid
-            # Normalize employment status: map 'A', 'ACTIVE', 'ACT' to 'Active' for consistency
-            F.when(F.upper(F.trim(F.col("employmentStatus"))).isin(['A', 'ACTIVE', 'ACT']), 'Active')
-             .otherwise(F.col("employmentStatus")).alias("employment_status"),
+        ]
+        
+        # Age - only cast if column exists
+        if has_age:
+            select_exprs.append(F.coalesce(F.expr("try_cast(age as int)"), F.lit(DEFAULT_AGE)).alias("age"))
+        else:
+            select_exprs.append(F.lit(DEFAULT_AGE).alias("age"))
+        
+        # Gender
+        if has_gender:
+            select_exprs.append(F.col("gender").alias("gender"))
+        else:
+            select_exprs.append(F.lit("Unknown").alias("gender"))
+        
+        # Department
+        if has_department:
+            select_exprs.append(F.col("department").alias("department"))
+        else:
+            select_exprs.append(F.lit("Unknown").alias("department"))
+        
+        # Job Title and Job Level
+        if has_jobTitle:
+            select_exprs.append(F.col("jobTitle").alias("job_title"))
+            select_exprs.append(
+                F.when(F.col("jobTitle").rlike(JOB_TITLE_PATTERN_SENIOR), 3)
+                 .when(F.col("jobTitle").rlike(JOB_TITLE_PATTERN_MID), 2)
+                 .otherwise(1).alias("job_level")
+            )
+        else:
+            select_exprs.append(F.lit("Unknown").alias("job_title"))
+            select_exprs.append(F.lit(1).alias("job_level"))
+        
+        # Location
+        if has_location:
+            select_exprs.append(F.col("location").alias("location"))
+        else:
+            select_exprs.append(F.lit("Unknown").alias("location"))
+        
+        # Employment Type - only cast if column exists
+        if has_employmentType:
+            select_exprs.append(
+                F.when(F.expr("try_cast(employmentType as int)") == 3631, "Full-time")
+                 .when(F.expr("try_cast(employmentType as int)") == 3637, "Part-time")
+                 .when(F.expr("try_cast(employmentType as int)") == 3638, "Contract")
+                 .when(F.col("employmentType").isNull(), DEFAULT_EMPLOYMENT_TYPE)
+                 .otherwise(DEFAULT_EMPLOYMENT_TYPE).alias("employment_type")
+            )
+        else:
+            select_exprs.append(F.lit(DEFAULT_EMPLOYMENT_TYPE).alias("employment_type"))
+        
+        # Base Salary
+        if has_annualSalary:
+            if has_minimumPay and has_maximumPay:
+                select_exprs.append(
+                    F.when(
+                        F.col("annualSalary").isNotNull(),
+                        F.expr("try_cast(annualSalary as int)")
+                    ).when(
+                        (F.col("minimumPay").isNotNull()) & (F.col("maximumPay").isNotNull()),
+                        F.expr("cast(floor(rand() * (try_cast(maximumPay as int) - try_cast(minimumPay as int) + 1)) + try_cast(minimumPay as int) as int)")
+                    ).otherwise(F.lit(DEFAULT_SALARY)).alias("base_salary")
+                )
+            else:
+                select_exprs.append(
+                    F.when(
+                        F.col("annualSalary").isNotNull(),
+                        F.expr("try_cast(annualSalary as int)")
+                    ).otherwise(F.lit(DEFAULT_SALARY)).alias("base_salary")
+                )
+        elif has_minimumPay and has_maximumPay:
+            select_exprs.append(
+                F.when(
+                    (F.col("minimumPay").isNotNull()) & (F.col("maximumPay").isNotNull()),
+                    F.expr("cast(floor(rand() * (try_cast(maximumPay as int) - try_cast(minimumPay as int) + 1)) + try_cast(minimumPay as int) as int)")
+                ).otherwise(F.lit(DEFAULT_SALARY)).alias("base_salary")
+            )
+        else:
+            select_exprs.append(F.lit(DEFAULT_SALARY).alias("base_salary"))
+        
+        # Tenure Months - only cast if column exists
+        if has_totalOrgTenureCalc:
+            select_exprs.append(
+                F.coalesce(F.expr("try_cast(totalOrgTenureCalc as int)"), F.lit(DEFAULT_TENURE_MONTHS)).alias("tenure_months")
+            )
+        else:
+            select_exprs.append(F.lit(DEFAULT_TENURE_MONTHS).alias("tenure_months"))
+        
+        # Months in Current Role - only cast if column exists
+        if has_totalPositionTenureCalc:
+            select_exprs.append(
+                F.coalesce(F.expr("try_cast(totalPositionTenureCalc as int)"), F.lit(DEFAULT_TENURE_MONTHS)).alias("months_in_current_role")
+            )
+        else:
+            select_exprs.append(F.lit(DEFAULT_TENURE_MONTHS).alias("months_in_current_role"))
+        
+        # Employment Status
+        if has_employmentStatus:
+            select_exprs.append(
+                F.when(F.upper(F.trim(F.col("employmentStatus"))).isin(['A', 'ACTIVE', 'ACT']), 'Active')
+                 .otherwise(F.col("employmentStatus")).alias("employment_status")
+            )
+        else:
+            select_exprs.append(F.lit("Active").alias("employment_status"))
+        
+        # First and Last Name (will be generated later)
+        select_exprs.extend([
             F.lit("Unknown").alias("first_name"),
             F.lit("Unknown").alias("last_name")
-        )
+        ])
+        
+        employees_df = employees_df_raw.select(*select_exprs)
         
         # Generate deterministic names using Spark SQL functions to preserve lineage
         # Use hash-based selection from predefined name lists - all Spark operations, no collect()
