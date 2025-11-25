@@ -70,6 +70,8 @@ print("✅ Data generation environment ready")
 
 # COMMAND ----------
 
+
+
 # COMMAND ----------
 
 # ============================================================================
@@ -947,15 +949,15 @@ def ensure_alex_in_employees_df(employees_df):
         F.col("months_in_current_role").cast("integer").alias("months_in_current_role"),
         F.col("employment_status").alias("employment_status"),
         F.col("first_name").alias("first_name"),
-            F.col("last_name").alias("last_name"),
-            F.col("hire_date").cast("date").alias("hire_date"),
-            F.col("current_job_start_date").cast("date").alias("current_job_start_date")
-        )
+        F.col("last_name").alias("last_name"),
+        F.col("hire_date").cast("date").alias("hire_date"),
+        F.col("current_job_start_date").cast("date").alias("current_job_start_date")
+    )
         
-        # Add department_name column based on department code mapping
-        # Handle both numeric codes and string codes (including 'null')
-        dept_mapping_expr = F.lit("Unknown")
-        for dept_code, dept_name in DEPARTMENT_CODE_TO_NAME.items():
+    # Add department_name column based on department code mapping
+    # Handle both numeric codes and string codes (including 'null')
+    dept_mapping_expr = F.lit("Unknown")
+    for dept_code, dept_name in DEPARTMENT_CODE_TO_NAME.items():
             if dept_code is None or dept_code == 'null' or dept_code == '':
                 # Handle null/empty values
                 dept_mapping_expr = F.when(
@@ -968,11 +970,11 @@ def ensure_alex_in_employees_df(employees_df):
                     (F.col("department") == dept_code) | (F.col("department").cast("string") == str(dept_code)),
                     F.lit(dept_name)
                 ).otherwise(dept_mapping_expr)
-        employees_df = employees_df.withColumn("department_name", dept_mapping_expr)
+    employees_df = employees_df.withColumn("department_name", dept_mapping_expr)
         
-        # Add location_name column based on location code mapping
-        loc_mapping_expr = F.lit("Australia")  # Default to Australia
-        for loc_code, loc_name in LOCATION_CODE_TO_NAME.items():
+    # Add location_name column based on location code mapping
+    loc_mapping_expr = F.lit("Australia")  # Default to Australia
+    for loc_code, loc_name in LOCATION_CODE_TO_NAME.items():
             if loc_code is None or loc_code == 'null' or loc_code == '':
                 loc_mapping_expr = F.when(
                     (F.col("location").isNull()) | (F.col("location") == 'null') | (F.col("location") == ''),
@@ -983,7 +985,7 @@ def ensure_alex_in_employees_df(employees_df):
                     (F.col("location") == loc_code) | (F.col("location").cast("string") == str(loc_code)),
                     F.lit(loc_name)
                 ).otherwise(loc_mapping_expr)
-        employees_df = employees_df.withColumn("location_name", loc_mapping_expr)
+    employees_df = employees_df.withColumn("location_name", loc_mapping_expr)
     
     # Union Alex's record with the rest
     employees_df = employees_df.unionByName(alex_df)
