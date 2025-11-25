@@ -368,6 +368,30 @@ def validate_data(X_train, y_train, X_test, y_test, feature_names):
     """Validate training and test data for common issues"""
     print("🔍 Data Validation:")
     
+    # Ensure arrays are numeric - always convert via pandas to handle any non-numeric data
+    # This is safer than checking dtype, as arrays might have object dtype or mixed types
+    try:
+        # Try to compute mean to check if numeric
+        _ = np.mean(X_train[:, 0])
+        # If successful, ensure it's float64
+        X_train = X_train.astype(np.float64)
+    except (TypeError, ValueError, OverflowError):
+        # Array contains non-numeric data, convert via pandas
+        print("   ⚠️ Converting X_train from non-numeric to float...")
+        col_names = feature_names[:X_train.shape[1]] if len(feature_names) >= X_train.shape[1] else [f'col_{i}' for i in range(X_train.shape[1])]
+        X_train = pd.DataFrame(X_train, columns=col_names).apply(pd.to_numeric, errors='coerce').fillna(0).values.astype(np.float64)
+    
+    try:
+        # Try to compute mean to check if numeric
+        _ = np.mean(X_test[:, 0])
+        # If successful, ensure it's float64
+        X_test = X_test.astype(np.float64)
+    except (TypeError, ValueError, OverflowError):
+        # Array contains non-numeric data, convert via pandas
+        print("   ⚠️ Converting X_test from non-numeric to float...")
+        col_names = feature_names[:X_test.shape[1]] if len(feature_names) >= X_test.shape[1] else [f'col_{i}' for i in range(X_test.shape[1])]
+        X_test = pd.DataFrame(X_test, columns=col_names).apply(pd.to_numeric, errors='coerce').fillna(0).values.astype(np.float64)
+    
     # Check for outliers (beyond 3 standard deviations)
     outliers_count = 0
     for i in range(X_train.shape[1]):
@@ -407,7 +431,7 @@ def validate_data(X_train, y_train, X_test, y_test, feature_names):
     else:
         print(f"   ✅ Train/test distributions similar")
     
-    return low_var_features
+    return low_var_features, X_train, X_test
 
 # Helper function for threshold optimization
 def optimize_threshold(y_true, y_pred_proba, metric='f1'):
@@ -491,8 +515,8 @@ def train_classification_model_with_improvements(
     print(f"🚀 Training {model_name_display} with All Improvements")
     print(f"{'='*70}\n")
     
-    # Data validation
-    low_var_features = validate_data(X_train, y_train, X_test, y_test, feature_names)
+    # Data validation (ensures arrays are numeric)
+    low_var_features, X_train, X_test = validate_data(X_train, y_train, X_test, y_test, feature_names)
     
     # Feature selection using RFE (keep 80% of features)
     print("\n🔍 Feature Selection with RFE...")
@@ -994,11 +1018,24 @@ try:
         # Print class distribution for promotion_ready before splitting
         print("Class distribution in promotion_ready (full dataset):", df_pandas['promotion_ready'].value_counts().to_dict())
         
-        # Prepare features and labels
-        X = df_pandas[all_feature_cols].fillna(0).values
-        y = df_pandas['promotion_ready'].fillna(0).values
+        # Ensure all feature columns are numeric (exclude original categorical columns)
+        categorical_cols_to_exclude = ['gender', 'department', 'location', 'employment_type', 'performance_trend', 'department_name', 'location_name']
+        numeric_feature_cols = [col for col in all_feature_cols if col not in categorical_cols_to_exclude and col in df_pandas.columns]
         
-        print(f"📊 Dataset: {len(X):,} records, {len(all_feature_cols)} features")
+        # Convert all columns to numeric, coercing errors to NaN, then fill with 0
+        for col in numeric_feature_cols:
+            df_pandas[col] = pd.to_numeric(df_pandas[col], errors='coerce').fillna(0)
+        
+        # Ensure we only select columns that exist and are numeric
+        X_df = df_pandas[numeric_feature_cols].copy()
+        # Double-check all columns are numeric
+        for col in X_df.columns:
+            X_df[col] = pd.to_numeric(X_df[col], errors='coerce').fillna(0)
+        
+        X = X_df.values.astype(np.float64)
+        y = pd.to_numeric(df_pandas['promotion_ready'], errors='coerce').fillna(0).values.astype(np.int32)
+        
+        print(f"📊 Dataset: {len(X):,} records, {len(numeric_feature_cols)} features")
         
         # If there are no positive samples, raise a clear error
         if np.sum(y) == 0:
@@ -1027,7 +1064,7 @@ try:
             except Exception as e:
                 print(f"⚠️ SMOTE failed: {e}. Falling back to simple resampling...")
                 from sklearn.utils import resample
-                X_train_df = pd.DataFrame(X_train, columns=all_feature_cols)
+                X_train_df = pd.DataFrame(X_train, columns=numeric_feature_cols)
                 y_train_df = pd.Series(y_train, name='promotion_ready')
                 train_df = pd.concat([X_train_df, y_train_df], axis=1)
                 df_majority = train_df[train_df['promotion_ready'] == 0]
@@ -1038,8 +1075,8 @@ try:
                     df_minority['promotion_ready'] = 1
                 df_minority_upsampled = resample(df_minority, replace=True, n_samples=len(df_majority), random_state=42)
                 train_upsampled = pd.concat([df_majority, df_minority_upsampled])
-                X_train = train_upsampled[all_feature_cols].values
-                y_train = train_upsampled['promotion_ready'].values
+                X_train = train_upsampled[numeric_feature_cols].values.astype(float)
+                y_train = train_upsampled['promotion_ready'].values.astype(int)
                 print("✅ Upsampled minority class in training set.")
                 print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
         elif np.sum(y_train == 1) < np.sum(y_train == 0) * 0.3 and IMBLEARN_AVAILABLE:  # If minority class is < 30% of majority
@@ -1060,7 +1097,7 @@ try:
         final_model_pipeline, metrics_dict, selected_feature_names, selected_features_mask = \
             train_classification_model_with_improvements(
                 X_train, y_train, X_test, y_test,
-                all_feature_cols,
+                numeric_feature_cols,
                 "Career Success Prediction Model",
                 model_type='classifier',
                 mlflow_run_name="career_success_prediction"
@@ -1070,7 +1107,7 @@ try:
         model_metrics_summary['career_success'] = metrics_dict
         
         # Create signature for Unity Catalog (required)
-        sample_input_all = pd.DataFrame(X_test[:5], columns=all_feature_cols)
+        sample_input_all = pd.DataFrame(X_test[:5], columns=numeric_feature_cols)
         sample_input_selected = sample_input_all[selected_feature_names]
         sample_output = pd.DataFrame(final_model_pipeline.predict(sample_input_selected), columns=['prediction'])
         signature = infer_signature(sample_input_selected, sample_output)
@@ -1087,7 +1124,7 @@ try:
         # Log selected features metadata
         mlflow.log_dict({
             'selected_features': selected_feature_names,
-            'all_features': all_feature_cols
+            'all_features': numeric_feature_cols
         }, artifact_file="feature_selection.json")
         
         # Set alias for Unity Catalog (required for easy loading)
@@ -1177,8 +1214,22 @@ try:
         # Print class distribution for high_flight_risk before splitting
         print("Class distribution in high_flight_risk (full dataset):", df_pandas['high_flight_risk'].value_counts().to_dict())
         
-        X = df_pandas[available_cols_retention].fillna(0).values
-        y = df_pandas['high_flight_risk'].fillna(0).values
+        # Ensure all feature columns are numeric (exclude original categorical columns)
+        categorical_cols_to_exclude = ['gender', 'department', 'location', 'employment_type', 'performance_trend', 'department_name', 'location_name']
+        numeric_cols_retention = [col for col in available_cols_retention if col not in categorical_cols_to_exclude and col in df_pandas.columns]
+        
+        # Convert all columns to numeric, coercing errors to NaN, then fill with 0
+        for col in numeric_cols_retention:
+            df_pandas[col] = pd.to_numeric(df_pandas[col], errors='coerce').fillna(0)
+        
+        # Ensure we only select columns that exist and are numeric
+        X_df = df_pandas[numeric_cols_retention].copy()
+        # Double-check all columns are numeric
+        for col in X_df.columns:
+            X_df[col] = pd.to_numeric(X_df[col], errors='coerce').fillna(0)
+        
+        X = X_df.values.astype(np.float64)
+        y = pd.to_numeric(df_pandas['high_flight_risk'], errors='coerce').fillna(0).values.astype(np.int32)
         
         # If there are no positive samples, raise a clear error
         if np.sum(y) == 0:
@@ -1207,7 +1258,7 @@ try:
                 except Exception as e:
                     print(f"⚠️ SMOTE failed: {e}. Falling back to simple resampling...")
                     from sklearn.utils import resample
-                    X_train_df = pd.DataFrame(X_train, columns=available_cols_retention)
+                    X_train_df = pd.DataFrame(X_train, columns=numeric_cols_retention)
                     y_train_df = pd.Series(y_train, name='high_flight_risk')
                     train_df = pd.concat([X_train_df, y_train_df], axis=1)
                     df_majority = train_df[train_df['high_flight_risk'] == 0]
@@ -1218,13 +1269,13 @@ try:
                         df_minority['high_flight_risk'] = 1
                     df_minority_upsampled = resample(df_minority, replace=True, n_samples=len(df_majority), random_state=42)
                     train_upsampled = pd.concat([df_majority, df_minority_upsampled])
-                    X_train = train_upsampled[available_cols_retention].values
-                    y_train = train_upsampled['high_flight_risk'].values
+                    X_train = train_upsampled[numeric_cols_retention].values.astype(float)
+                    y_train = train_upsampled['high_flight_risk'].values.astype(int)
                     print("✅ Upsampled minority class in training set.")
                     print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
             else:
                 from sklearn.utils import resample
-                X_train_df = pd.DataFrame(X_train, columns=available_cols_retention)
+                X_train_df = pd.DataFrame(X_train, columns=numeric_cols_retention)
                 y_train_df = pd.Series(y_train, name='high_flight_risk')
                 train_df = pd.concat([X_train_df, y_train_df], axis=1)
                 df_majority = train_df[train_df['high_flight_risk'] == 0]
@@ -1235,8 +1286,8 @@ try:
                     df_minority['high_flight_risk'] = 1
                 df_minority_upsampled = resample(df_minority, replace=True, n_samples=len(df_majority), random_state=42)
                 train_upsampled = pd.concat([df_majority, df_minority_upsampled])
-                X_train = train_upsampled[available_cols_retention].values
-                y_train = train_upsampled['high_flight_risk'].values
+                X_train = train_upsampled[numeric_cols_retention].values.astype(float)
+                y_train = train_upsampled['high_flight_risk'].values.astype(int)
                 print("✅ Upsampled minority class in training set.")
                 print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
         elif np.sum(y_train == 1) < np.sum(y_train == 0) * 0.3 and IMBLEARN_AVAILABLE:
@@ -1270,7 +1321,7 @@ try:
         final_model_pipeline, metrics_dict, selected_feature_names, selected_features_mask = \
             train_classification_model_with_improvements(
                 X_train, y_train, X_test, y_test,
-                available_cols_retention,
+                numeric_cols_retention,
                 "Retention Risk Prediction Model",
                 model_type='classifier',
                 param_grids=custom_params,
@@ -1281,7 +1332,7 @@ try:
         model_metrics_summary['retention_risk'] = metrics_dict
         
         # Create signature for Unity Catalog (required)
-        sample_input_all = pd.DataFrame(X_test[:5], columns=available_cols_retention)
+        sample_input_all = pd.DataFrame(X_test[:5], columns=numeric_cols_retention)
         sample_input_selected = sample_input_all[selected_feature_names]
         sample_output = pd.DataFrame(final_model_pipeline.predict(sample_input_selected), columns=['prediction'])
         signature = infer_signature(sample_input_selected, sample_output)
@@ -1298,7 +1349,7 @@ try:
         # Log selected features metadata
         mlflow.log_dict({
             'selected_features': selected_feature_names,
-            'all_features': available_cols_retention
+            'all_features': numeric_cols_retention
         }, artifact_file="feature_selection.json")
         
         # Set alias for Unity Catalog
@@ -1389,8 +1440,22 @@ try:
         # Print class distribution for high_potential before splitting
         print("Class distribution in high_potential (full dataset):", df_pandas['high_potential'].value_counts().to_dict())
         
-        X = df_pandas[available_cols_potential].fillna(0).values
-        y = df_pandas['high_potential'].fillna(0).values
+        # Ensure all feature columns are numeric (exclude original categorical columns)
+        categorical_cols_to_exclude = ['gender', 'department', 'location', 'employment_type', 'performance_trend', 'department_name', 'location_name']
+        numeric_cols_potential = [col for col in available_cols_potential if col not in categorical_cols_to_exclude and col in df_pandas.columns]
+        
+        # Convert all columns to numeric, coercing errors to NaN, then fill with 0
+        for col in numeric_cols_potential:
+            df_pandas[col] = pd.to_numeric(df_pandas[col], errors='coerce').fillna(0)
+        
+        # Ensure we only select columns that exist and are numeric
+        X_df = df_pandas[numeric_cols_potential].copy()
+        # Double-check all columns are numeric
+        for col in X_df.columns:
+            X_df[col] = pd.to_numeric(X_df[col], errors='coerce').fillna(0)
+        
+        X = X_df.values.astype(np.float64)
+        y = pd.to_numeric(df_pandas['high_potential'], errors='coerce').fillna(0).values.astype(np.int32)
         
         # If there are no positive samples, raise a clear error
         if np.sum(y) == 0:
@@ -1419,7 +1484,7 @@ try:
                 except Exception as e:
                     print(f"⚠️ SMOTE failed: {e}. Falling back to simple resampling...")
                     from sklearn.utils import resample
-                    X_train_df = pd.DataFrame(X_train, columns=available_cols_potential)
+                    X_train_df = pd.DataFrame(X_train, columns=numeric_cols_potential)
                     y_train_df = pd.Series(y_train, name='high_potential')
                     train_df = pd.concat([X_train_df, y_train_df], axis=1)
                     df_majority = train_df[train_df['high_potential'] == 0]
@@ -1430,13 +1495,13 @@ try:
                         df_minority['high_potential'] = 1
                     df_minority_upsampled = resample(df_minority, replace=True, n_samples=len(df_majority), random_state=42)
                     train_upsampled = pd.concat([df_majority, df_minority_upsampled])
-                    X_train = train_upsampled[available_cols_potential].values
-                    y_train = train_upsampled['high_potential'].values
+                    X_train = train_upsampled[numeric_cols_potential].values.astype(float)
+                    y_train = train_upsampled['high_potential'].values.astype(int)
                     print("✅ Upsampled minority class in training set.")
                     print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
             else:
                 from sklearn.utils import resample
-                X_train_df = pd.DataFrame(X_train, columns=available_cols_potential)
+                X_train_df = pd.DataFrame(X_train, columns=numeric_cols_potential)
                 y_train_df = pd.Series(y_train, name='high_potential')
                 train_df = pd.concat([X_train_df, y_train_df], axis=1)
                 df_majority = train_df[train_df['high_potential'] == 0]
@@ -1447,8 +1512,8 @@ try:
                     df_minority['high_potential'] = 1
                 df_minority_upsampled = resample(df_minority, replace=True, n_samples=len(df_majority), random_state=42)
                 train_upsampled = pd.concat([df_majority, df_minority_upsampled])
-                X_train = train_upsampled[available_cols_potential].values
-                y_train = train_upsampled['high_potential'].values
+                X_train = train_upsampled[numeric_cols_potential].values.astype(float)
+                y_train = train_upsampled['high_potential'].values.astype(int)
                 print("✅ Upsampled minority class in training set.")
                 print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
         elif np.sum(y_train == 1) < np.sum(y_train == 0) * 0.3 and IMBLEARN_AVAILABLE:
@@ -1482,7 +1547,7 @@ try:
         final_model_pipeline, metrics_dict, selected_feature_names, selected_features_mask = \
             train_classification_model_with_improvements(
                 X_train, y_train, X_test, y_test,
-                available_cols_potential,
+                numeric_cols_potential,
                 "High Potential Identification Model",
                 model_type='classifier',
                 param_grids=custom_params,
@@ -1493,7 +1558,7 @@ try:
         model_metrics_summary['high_potential'] = metrics_dict
         
         # Create signature for Unity Catalog (required)
-        sample_input_all = pd.DataFrame(X_test[:5], columns=available_cols_potential)
+        sample_input_all = pd.DataFrame(X_test[:5], columns=numeric_cols_potential)
         sample_input_selected = sample_input_all[selected_feature_names]
         sample_output = pd.DataFrame(final_model_pipeline.predict(sample_input_selected), columns=['prediction'])
         signature = infer_signature(sample_input_selected, sample_output)
@@ -1510,7 +1575,7 @@ try:
         # Log selected features metadata
         mlflow.log_dict({
             'selected_features': selected_feature_names,
-            'all_features': available_cols_potential
+            'all_features': numeric_cols_potential
         }, artifact_file="feature_selection.json")
         
         # Set alias for Unity Catalog
@@ -1575,8 +1640,22 @@ try:
         print("🔄 Converting to Pandas DataFrame for sklearn...")
         df_pandas = promotion_readiness_encoded.select(available_cols_readiness + ['readiness_score']).toPandas()
         
-        X = df_pandas[available_cols_readiness].fillna(0).values
-        y = df_pandas['readiness_score'].fillna(0).values
+        # Ensure all feature columns are numeric (exclude original categorical columns)
+        categorical_cols_to_exclude = ['gender', 'department', 'location', 'employment_type', 'performance_trend', 'department_name', 'location_name']
+        numeric_cols_readiness = [col for col in available_cols_readiness if col not in categorical_cols_to_exclude and col in df_pandas.columns]
+        
+        # Convert all columns to numeric, coercing errors to NaN, then fill with 0
+        for col in numeric_cols_readiness:
+            df_pandas[col] = pd.to_numeric(df_pandas[col], errors='coerce').fillna(0)
+        
+        # Ensure we only select columns that exist and are numeric
+        X_df = df_pandas[numeric_cols_readiness].copy()
+        # Double-check all columns are numeric
+        for col in X_df.columns:
+            X_df[col] = pd.to_numeric(X_df[col], errors='coerce').fillna(0)
+        
+        X = X_df.values.astype(np.float64)
+        y = pd.to_numeric(df_pandas['readiness_score'], errors='coerce').fillna(0).values.astype(np.float64)
         
         # Split data
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -1585,7 +1664,7 @@ try:
         final_model_pipeline, metrics_dict, selected_feature_names, selected_features_mask = \
             train_classification_model_with_improvements(
                 X_train, y_train, X_test, y_test,
-                available_cols_readiness,
+                numeric_cols_readiness,
                 "Promotion Readiness Scoring Model",
                 model_type='regressor',
                 mlflow_run_name="promotion_readiness_scoring"
@@ -1595,7 +1674,7 @@ try:
         model_metrics_summary['promotion_readiness'] = metrics_dict
         
         # Create signature for Unity Catalog (required)
-        sample_input_all = pd.DataFrame(X_test[:5], columns=available_cols_readiness)
+        sample_input_all = pd.DataFrame(X_test[:5], columns=numeric_cols_readiness)
         sample_input_selected = sample_input_all[selected_feature_names]
         sample_output = pd.DataFrame(final_model_pipeline.predict(sample_input_selected), columns=['prediction'])
         signature = infer_signature(sample_input_selected, sample_output)
@@ -1612,7 +1691,7 @@ try:
         # Log selected features metadata
         mlflow.log_dict({
             'selected_features': selected_feature_names,
-            'all_features': available_cols_readiness
+            'all_features': numeric_cols_readiness
         }, artifact_file="feature_selection.json")
         
         # Set alias for Unity Catalog
