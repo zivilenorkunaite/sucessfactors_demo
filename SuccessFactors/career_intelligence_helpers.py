@@ -626,20 +626,12 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
     }
     mapped_emp_type = emp_type_mapping.get(actual_emp_type, 'Full_time')
     
-    # Normalize actual values to match encoding patterns
-    actual_gender_normalized = str(actual_gender).strip()
-    if actual_gender_normalized in ['M', 'Male']:
-        actual_gender_normalized = 'Male'
-    elif actual_gender_normalized in ['F', 'Female']:
-        actual_gender_normalized = 'Female'
-    elif actual_gender_normalized in ['Non-binary', 'Non_binary', 'Non binary']:
-        actual_gender_normalized = 'Non_binary'
-    else:
-        actual_gender_normalized = 'Other'
-    
-    actual_trend_normalized = str(actual_trend).strip()
-    if actual_trend_normalized == 'Rising':
-        actual_trend_normalized = 'Improving'  # Map Rising to Improving for consistency
+    # Normalize actual values - but keep original format for matching with model signature columns
+    # The model signature will tell us the exact format (e.g., gender_M vs gender_Male)
+    actual_gender_raw = str(actual_gender).strip()
+    actual_dept_raw = str(actual_dept).strip()
+    actual_location_raw = str(actual_location).strip()
+    actual_trend_raw = str(actual_trend).strip()
     
     # Build ALL possible features first (needed for signature-based filtering)
     all_features = {}
@@ -650,31 +642,46 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
         all_features[feat] = float(val) if val is not None else 0.0
     
     # Encode all possible categoricals
-    # Handle both string and numeric categorical values (e.g., department can be "Engineering" or 1034)
+    # Match the exact format from model signature (e.g., gender_M, gender_F, gender_NB)
     for col_name in all_possible_categoricals:
         if col_name.startswith('gender_'):
             val = col_name.replace('gender_', '')
-            if val == 'Non_binary':
-                all_features[col_name] = 1.0 if actual_gender_normalized in ['Non_binary', 'Non-binary', 'Non binary'] else 0.0
+            # Handle various gender encodings: M, Male, F, Female, NB, Non_binary, etc.
+            if val in ['M', 'Male']:
+                all_features[col_name] = 1.0 if actual_gender_raw in ['M', 'Male', 'm', 'male'] else 0.0
+            elif val in ['F', 'Female']:
+                all_features[col_name] = 1.0 if actual_gender_raw in ['F', 'Female', 'f', 'female'] else 0.0
+            elif val in ['NB', 'Non_binary', 'Non-binary', 'Non binary']:
+                all_features[col_name] = 1.0 if actual_gender_raw in ['NB', 'Non_binary', 'Non-binary', 'Non binary', 'nb'] else 0.0
             else:
-                all_features[col_name] = 1.0 if actual_gender_normalized == val else 0.0
+                # For any other gender encoding format, do exact match
+                all_features[col_name] = 1.0 if actual_gender_raw == val else 0.0
         elif col_name.startswith('department_'):
             dept_val = col_name.replace('department_', '')
             # Compare as strings to handle both numeric codes (1034) and string names (Engineering)
-            all_features[col_name] = 1.0 if str(actual_dept).strip() == str(dept_val).strip() else 0.0
+            all_features[col_name] = 1.0 if str(actual_dept_raw) == str(dept_val) else 0.0
         elif col_name.startswith('location_'):
             loc_val = col_name.replace('location_', '')
             # Compare as strings to handle both numeric codes (43) and string names (Sydney)
-            all_features[col_name] = 1.0 if str(actual_location).strip() == str(loc_val).strip() else 0.0
+            all_features[col_name] = 1.0 if str(actual_location_raw) == str(loc_val) else 0.0
         elif col_name.startswith('employment_type_'):
             emp_val = col_name.replace('employment_type_', '')
-            all_features[col_name] = 1.0 if mapped_emp_type == emp_val else 0.0
-        elif col_name.startswith('performance_trend_'):
-            trend_val = col_name.replace('performance_trend_', '')
-            if actual_trend_normalized == 'Improving' and trend_val == 'Improving':
+            # Handle various employment type formats
+            if emp_val == mapped_emp_type:
+                all_features[col_name] = 1.0
+            elif emp_val in ['Part_time', 'Part-time', 'Part time'] and mapped_emp_type in ['Part_time', 'Part-time', 'Part time']:
+                all_features[col_name] = 1.0
+            elif emp_val in ['Full_time', 'Full-time', 'Full time'] and mapped_emp_type in ['Full_time', 'Full-time', 'Full time']:
                 all_features[col_name] = 1.0
             else:
-                all_features[col_name] = 1.0 if actual_trend_normalized == trend_val else 0.0
+                all_features[col_name] = 1.0 if mapped_emp_type == emp_val else 0.0
+        elif col_name.startswith('performance_trend_'):
+            trend_val = col_name.replace('performance_trend_', '')
+            # Handle trend normalization
+            normalized_trend = actual_trend_raw
+            if normalized_trend == 'Rising':
+                normalized_trend = 'Improving'
+            all_features[col_name] = 1.0 if normalized_trend == trend_val else 0.0
     
     # If we have model signature, filter to ONLY those features and return in correct order
     if expected_features_from_signature:
@@ -1540,7 +1547,8 @@ def get_demo_employee_data(employees_df, displayHTML):
         print(f"🎯 MEET {alex.first_name.upper()} {alex.last_name.upper()} - {alex.job_title}")
         print("=" * 50)
         print(f"👤 Profile: {alex.age} years old, {alex.gender}")
-        print(f"🏢 Role: {alex.current_level} in {alex.department}")
+        dept_name = getattr(alex, 'department_name', None) or getattr(alex, 'department', 'Unknown')
+        print(f"🏢 Role: {alex.current_level} in {dept_name}")
         print(f"⏱️ Tenure: {alex.months_in_role} months in current role, {alex.months_in_company} months at company")
         print(f"⭐ Performance: {alex.performance_rating}/5 ({alex.performance_trend} trend)")
         print(f"💪 Engagement: {alex.engagement_score}% | Potential: {alex.potential_score}%")
@@ -1558,7 +1566,7 @@ def get_demo_employee_data(employees_df, displayHTML):
                 <div style="min-width: 200px;">
                     <h4>📊 Current Status</h4>
                     <p><strong>Role:</strong> {alex.current_level}</p>
-                    <p><strong>Department:</strong> {alex.department}</p>
+                    <p><strong>Department:</strong> {getattr(alex, 'department_name', None) or getattr(alex, 'department', 'Unknown')}</p>
                     <p><strong>Tenure:</strong> {alex.months_in_role} months</p>
                 </div>
                 <div style="min-width: 200px;">
@@ -1601,7 +1609,7 @@ def build_context_summary(context, question=""):
                 return f"""
                 Employee: {emp.get('name', 'Unknown')}
                 Role: {emp.get('current_level', 'Unknown')}
-                Department: {emp.get('department', 'Unknown')}
+                Department: {emp.get('department_name', emp.get('department', 'Unknown'))}
                 Performance Rating: {emp.get('performance_rating', 'N/A')}/5
                 Tenure: {emp.get('months_in_company', 0)} months in company, {emp.get('months_in_role', 0)} months in current role
                 Engagement: {emp.get('engagement_score', 0)}%
@@ -1662,7 +1670,7 @@ def build_context_summary(context, question=""):
                 candidates_summary = f"Top Internal Candidates ({len(candidates)} ranked):\n\n"
                 for idx, emp in enumerate(candidates, 1):
                     candidates_summary += f"{idx}. {emp.get('first_name', '')} {emp.get('last_name', '')}\n"
-                    candidates_summary += f"   Current Role: {emp.get('job_title', 'Unknown')} in {emp.get('department', 'Unknown')}\n"
+                    candidates_summary += f"   Current Role: {emp.get('job_title', 'Unknown')} in {emp.get('department_name', emp.get('department', 'Unknown'))}\n"
                     candidates_summary += f"   Performance: {emp.get('performance_rating', 0):.1f}/5, "
                     candidates_summary += f"Potential: {emp.get('potential_score', 0):.0f}%, "
                     candidates_summary += f"Leadership: {emp.get('leadership_readiness', 0):.0f}%, "
@@ -1748,7 +1756,7 @@ def build_demo_employee_context(alex_data, catalog_name, schema_name, spark):
         Name: {alex.first_name} {alex.last_name}
         Gender: {alex.gender}
         Role: {alex.job_title}
-        Department: {alex.department}
+        Department: {getattr(alex, 'department_name', None) or getattr(alex, 'department', 'Unknown')}
         Job Level: {alex.job_level}
         Tenure: {alex.tenure_months} months in company, {alex.months_in_current_role} months in current role
         Performance Rating: {alex.performance_rating}/5
@@ -1876,14 +1884,40 @@ def generate_career_predictions(employee_data,career_models,employees_df,display
             # This will extract the signature and filter to ONLY the expected features in correct order
             model_features = prepare_features_for_model(transition_features, career_models['career_success'], spark, catalog_name, schema_name)
             
-            # Create DataFrame with exactly the features the model expects (already filtered and ordered by prepare_features_for_model)
-            features_df = pd.DataFrame([model_features])
+            # Create DataFrame with exactly the features the model expects
+            # Get expected column order from model signature first
+            expected_cols = None
+            try:
+                from mlflow.pyfunc import PyFuncModel
+                if isinstance(career_models['career_success'], PyFuncModel):
+                    if hasattr(career_models['career_success'], 'metadata') and career_models['career_success'].metadata:
+                        signature = career_models['career_success'].metadata.get_signature()
+                        if signature and signature.inputs:
+                            expected_cols = [inp.name for inp in signature.inputs.inputs]
+            except Exception:
+                pass
+            
+            # Create DataFrame with explicit column order if we have it
+            if expected_cols:
+                # Ensure all expected columns exist in model_features, add missing ones with 0.0
+                for col in expected_cols:
+                    if col not in model_features:
+                        model_features[col] = 0.0
+                # Create DataFrame with columns in exact order expected by model
+                features_df = pd.DataFrame([model_features], columns=expected_cols)
+                # Ensure all columns are float64
+                for col in expected_cols:
+                    features_df[col] = features_df[col].astype('float64')
+            else:
+                # Fallback: create DataFrame normally
+                features_df = pd.DataFrame([model_features])
             
             # CRITICAL: Enforce exact schema match - remove extra columns and ensure all required columns exist
-            #features_df = ensure_dataframe_schema(features_df, career_models['career_success'])
+            # This ensures columns are in the right order and all required columns are present
+            features_df = ensure_dataframe_schema(features_df, career_models['career_success'])
             
             # Get ML model prediction
-            success_pred = career_models['career_success'].predict(ensure_dataframe_schema(features_df, career_models['career_success']))
+            success_pred = career_models['career_success'].predict(features_df)
             
             # Extract probability
             if isinstance(success_pred, np.ndarray):
@@ -1902,7 +1936,9 @@ def generate_career_predictions(employee_data,career_models,employees_df,display
             if 'promotion_readiness' not in career_models:
                 raise ValueError("❌ Promotion readiness model required but not loaded.")
             
-            readiness_pred = career_models['promotion_readiness'].predict(features_df)
+            # Ensure features_df matches promotion_readiness model schema too
+            readiness_features_df = ensure_dataframe_schema(features_df.copy(), career_models['promotion_readiness'])
+            readiness_pred = career_models['promotion_readiness'].predict(readiness_features_df)
             if isinstance(readiness_pred, np.ndarray):
                 if len(readiness_pred) == 0:
                     raise ValueError(f"❌ Promotion readiness model returned empty prediction for role {role['title']}.")
