@@ -243,18 +243,18 @@ def generate_employees():
     employees = []
     
     # Realistic organizational data matching SAP SuccessFactors structure - Australia focused
-    departments = ['Engineering', 'Product', 'Sales', 'Marketing', 'Finance', 'HR', 'Operations', 'Legal']
+    # Department codes: 1034=Engineering, 1035=Product, 1036=Sales, 1037=Marketing, 1038=Finance, 1039=HR, 1040=Operations, 1041=Legal
     departments = [1034, 1035, 1036, 1037, 1038, 1039, 1040, 1041]
     locations = ['Sydney', 'Melbourne', 'Brisbane', 'Perth', 'Adelaide']  # Australian cities
     job_families = {
-        'Engineering': ['Software Engineer', 'Senior Software Engineer', 'Staff Engineer', 'Engineering Manager', 'Director Engineering'],
-        'Product': ['Product Analyst', 'Product Manager', 'Senior PM', 'Principal PM', 'VP Product'],
-        'Sales': ['Sales Rep', 'Account Executive', 'Sales Manager', 'Regional Director', 'VP Sales'],
-        'Marketing': ['Marketing Specialist', 'Marketing Manager', 'Senior Manager', 'Marketing Director', 'CMO'],
-        'Finance': ['Financial Analyst', 'Senior Analyst', 'Finance Manager', 'Finance Director', 'CFO'],
-        'HR': ['HR Generalist', 'HR Business Partner', 'HR Manager', 'HR Director', 'CHRO'],
-        'Operations': ['Operations Analyst', 'Operations Manager', 'Senior Manager', 'Operations Director', 'COO'],
-        'Legal': ['Legal Counsel', 'Senior Counsel', 'Legal Director', 'General Counsel']
+        1034: ['Software Engineer', 'Senior Software Engineer', 'Staff Engineer', 'Engineering Manager', 'Director Engineering'],  # Engineering
+        1035: ['Product Analyst', 'Product Manager', 'Senior PM', 'Principal PM', 'VP Product'],  # Product
+        1036: ['Sales Rep', 'Account Executive', 'Sales Manager', 'Regional Director', 'VP Sales'],  # Sales
+        1037: ['Marketing Specialist', 'Marketing Manager', 'Senior Manager', 'Marketing Director', 'CMO'],  # Marketing
+        1038: ['Financial Analyst', 'Senior Analyst', 'Finance Manager', 'Finance Director', 'CFO'],  # Finance
+        1039: ['HR Generalist', 'HR Business Partner', 'HR Manager', 'HR Director', 'CHRO'],  # HR
+        1040: ['Operations Analyst', 'Operations Manager', 'Senior Manager', 'Operations Director', 'COO'],  # Operations
+        1041: ['Legal Counsel', 'Senior Counsel', 'Legal Director', 'General Counsel']  # Legal
     }
     
     employee_id = 100000
@@ -967,8 +967,15 @@ def ensure_all_employees_have_performance_records(performance_df, employees_df, 
         # Generate at least one performance review for each missing employee
         generated_reviews = []
         for row in missing_employees_df_full.toLocalIterator():
-            # Calculate hire_date from tenure_months if not available
-            tenure_months = row.get('tenure_months', 0) or 0
+            # Calculate review_date from tenure_months
+            # Spark Row objects don't have .get() method, use direct access with try-except
+            try:
+                tenure_months = row['tenure_months']
+                if tenure_months is None or (isinstance(tenure_months, (int, float)) and tenure_months <= 0):
+                    tenure_months = 0
+            except (KeyError, IndexError):
+                tenure_months = 0
+            
             if isinstance(tenure_months, (int, float)) and tenure_months > 0:
                 review_date = date.today() - timedelta(days=int(tenure_months * 30))
             else:
@@ -1046,8 +1053,15 @@ def ensure_all_employees_have_learning_records(learning_df, employees_df, employ
         # Generate at least one learning record for each missing employee
         generated_learning = []
         for row in missing_employees_df_full.toLocalIterator():
-            # Calculate completion_date from tenure_months if not available
-            tenure_months = row.get('tenure_months', 0) or 0
+            # Calculate completion_date from tenure_months
+            # Spark Row objects don't have .get() method, use direct access with try-except
+            try:
+                tenure_months = row['tenure_months']
+                if tenure_months is None or (isinstance(tenure_months, (int, float)) and tenure_months <= 0):
+                    tenure_months = 0
+            except (KeyError, IndexError):
+                tenure_months = 0
+            
             if isinstance(tenure_months, (int, float)) and tenure_months > 0:
                 completion_date = date.today() - timedelta(days=int(min(tenure_months * 30, 180)))
             else:
@@ -1774,20 +1788,21 @@ def _collect_employees_list_if_needed(employees_df_prepared):
         # Use toLocalIterator() to process in batches instead of collecting all at once
         # This reduces driver memory pressure for large datasets
         for row in employees_df_prepared.toLocalIterator():
-            # Convert Spark date objects to Python date objects
-            hire_date_val = row['hire_date']
-            if hire_date_val is not None:
-                if isinstance(hire_date_val, str):
-                    hire_date_val = datetime.strptime(hire_date_val, '%Y-%m-%d').date()
-                elif hasattr(hire_date_val, 'date'):
-                    hire_date_val = hire_date_val.date()
+            # Calculate hire_date and current_job_start_date from tenure_months and months_in_current_role
+            # The employees_df doesn't have these date columns, so we calculate them
+            try:
+                tenure_months = row['tenure_months'] if row['tenure_months'] is not None else 0
+            except (KeyError, IndexError):
+                tenure_months = 0
             
-            job_start_val = row['current_job_start_date']
-            if job_start_val is not None:
-                if isinstance(job_start_val, str):
-                    job_start_val = datetime.strptime(job_start_val, '%Y-%m-%d').date()
-                elif hasattr(job_start_val, 'date'):
-                    job_start_val = job_start_val.date()
+            try:
+                months_in_current_role = row['months_in_current_role'] if row['months_in_current_role'] is not None else 0
+            except (KeyError, IndexError):
+                months_in_current_role = 0
+            
+            # Calculate dates from tenure
+            hire_date_val = date.today() - timedelta(days=int(tenure_months * 30))
+            job_start_val = date.today() - timedelta(days=int(months_in_current_role * 30))
             
             employees_list.append({
                 'employee_id': row['employee_id'],
@@ -1799,13 +1814,13 @@ def _collect_employees_list_if_needed(employees_df_prepared):
                 'location': row['location'],
                 'employment_type': row['employment_type'],
                 'base_salary': row['base_salary'],
-                'tenure_months': row['tenure_months'],
-                'months_in_current_role': row['months_in_current_role'],
+                'tenure_months': tenure_months,
+                'months_in_current_role': months_in_current_role,
                 'employment_status': row['employment_status'],
                 'first_name': row['first_name'],
                 'last_name': row['last_name'],
-                'hire_date': hire_date_val if hire_date_val else (date.today() - timedelta(days=row['tenure_months'] * 30)),
-                'current_job_start_date': job_start_val if job_start_val else (date.today() - timedelta(days=row['months_in_current_role'] * 30))
+                'hire_date': hire_date_val,
+                'current_job_start_date': job_start_val
             })
         
         return employees_list
