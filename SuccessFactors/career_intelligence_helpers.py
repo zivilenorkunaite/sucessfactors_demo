@@ -2813,12 +2813,12 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
         if readiness_score >= 80 and potential_prob >= 0.75:
             # Highest tier: Both ready now AND high potential
             talent_category = 'Ready for Promotion'
-        elif readiness_score >= 75:
-            # Ready now - prioritize this over potential/performance
-            talent_category = 'Promotion Ready'  # Ready regardless of potential
-        elif potential_prob >= 0.75:
-            # High potential but not quite ready yet
+        elif potential_prob >= 0.75 and readiness_score >= 70:
+            # High potential with good readiness (but not quite ready yet)
             talent_category = 'High Potential'
+        elif readiness_score >= 75:
+            # Ready now but lower potential (ready for promotion but limited growth)
+            talent_category = 'Ready Now'
         elif performance_rating >= 4.0 and engagement_score >= 80:
             # Strong performer but not yet ready/potential
             talent_category = 'Top Performer'
