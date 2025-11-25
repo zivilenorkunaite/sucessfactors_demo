@@ -2901,7 +2901,7 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
     target_count = 20
     
     # Priority order for categories (want to see these in visualization)
-    priority_categories = ['Ready for Promotion', 'Promotion Ready', 'High Potential', 'Top Performer', 'Developing', 'Needs Development']
+    priority_categories = ['Ready for Promotion', 'Ready Now', 'High Potential', 'Top Performer', 'Developing', 'Needs Development']
     
     # Select top examples from each priority category
     for category in priority_categories:
