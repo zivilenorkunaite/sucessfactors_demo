@@ -1215,7 +1215,15 @@ def load_employees_from_data_product(generated_employees=None):
             print(f"   🔍 Deduplicating by employee_id using {start_date_col} (keeping latest record per employee)...")
             # Optimize window function: repartition by userId to ensure proper data distribution
             # This reduces shuffling during window operation and improves performance
-            default_partitions = int(spark.conf.get("spark.sql.shuffle.partitions", "200"))
+            # Handle case where spark.sql.shuffle.partitions might be "auto" or non-numeric
+            try:
+                partitions_str = spark.conf.get("spark.sql.shuffle.partitions", "200")
+                if partitions_str == "auto" or not partitions_str.isdigit():
+                    default_partitions = 200  # Default fallback
+                else:
+                    default_partitions = int(partitions_str)
+            except (ValueError, TypeError):
+                default_partitions = 200  # Default fallback
             num_partitions = max(1, min(200, default_partitions))
             employees_df_raw = employees_df_raw.repartition(num_partitions, "userId")
             
