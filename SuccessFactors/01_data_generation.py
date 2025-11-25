@@ -1660,6 +1660,27 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
         # Map columns to expected names
         # Use try_cast to handle malformed values
         # Map completion status IDs to strings: "1"->Completed, "2"->In Progress, "3"->Not Started
+        
+        # Build completion status expression outside of select
+        completion_status_expr = F.when(F.col("completionStatusId") == COMPLETION_STATUS_ID_COMPLETED, COMPLETION_STATUS_COMPLETED)
+         .when(F.col("completionStatusId") == COMPLETION_STATUS_ID_IN_PROGRESS, COMPLETION_STATUS_IN_PROGRESS)
+         .when(F.col("completionStatusId") == COMPLETION_STATUS_ID_NOT_STARTED, COMPLETION_STATUS_NOT_STARTED)
+        
+        # If completionStatus column exists, check for recognized codes
+        if has_completion_status and completion_status_col:
+            completion_status_expr = completion_status_expr.when(
+                F.upper(F.trim(F.col(completion_status_col))).isin([
+                    "COURSE-COMPL", "CERT-RECERT", "BRIEF-COMPL", "ONLINE-COMPL", 
+                    "MOOC-CMPL", "COURSE-ATND", "DOC-READ", "TASK-C", 
+                    "CERT-REINST", "CERT-COMPL", "COMPLETED", "IN PROGRESS", "NOT STARTED"
+                ]), F.upper(F.trim(F.col(completion_status_col)))
+            ).when(
+                F.col(completion_status_col).isNotNull() & (F.trim(F.col(completion_status_col)) != ""), 
+                F.col(completion_status_col)
+            )
+        
+        completion_status_expr = completion_status_expr.otherwise(F.lit(COMPLETION_STATUS_NOT_STARTED)).alias("completion_status")
+        
         learning_df = learning_df_raw.select(
             F.col("userId").alias("employee_id"),
             F.coalesce(F.col("learningItemId"), F.concat(F.lit("LRN"), F.abs(F.hash(F.col("userId"))).cast("string"))).alias("learning_id"),
@@ -1676,26 +1697,6 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
              .otherwise("Technical Skills").alias("category"),
             F.coalesce(F.expr("try_cast(completionDate as date)"), F.expr("try_cast(completedDate as date)"), F.current_date()).alias("completion_date"),
             F.coalesce(F.expr("try_cast(hoursCompleted as int)"), F.expr("try_cast(totalHours as int)"), F.lit(0)).alias("hours_completed"),
-            # Map completion status ID to string
-            # Also handle various completion status codes from data product
-            # Priority: 1) completionStatusId mapping, 2) completionStatus if it's a recognized code, 3) default
-            completion_status_expr = F.when(F.col("completionStatusId") == COMPLETION_STATUS_ID_COMPLETED, COMPLETION_STATUS_COMPLETED)
-             .when(F.col("completionStatusId") == COMPLETION_STATUS_ID_IN_PROGRESS, COMPLETION_STATUS_IN_PROGRESS)
-             .when(F.col("completionStatusId") == COMPLETION_STATUS_ID_NOT_STARTED, COMPLETION_STATUS_NOT_STARTED)
-            
-            # If completionStatus column exists, check for recognized codes
-            if has_completion_status and completion_status_col:
-                completion_status_expr = completion_status_expr.when(
-                    F.upper(F.trim(F.col(completion_status_col))).isin([
-                        "COURSE-COMPL", "CERT-RECERT", "BRIEF-COMPL", "ONLINE-COMPL", 
-                        "MOOC-CMPL", "COURSE-ATND", "DOC-READ", "TASK-C", 
-                        "CERT-REINST", "CERT-COMPL", "COMPLETED", "IN PROGRESS", "NOT STARTED"
-                    ]), F.upper(F.trim(F.col(completion_status_col)))
-                ).when(
-                    F.col(completion_status_col).isNotNull() & (F.trim(F.col(completion_status_col)) != ""), 
-                    F.col(completion_status_col)
-                )
-            
             completion_status_expr,
             F.coalesce(F.expr("try_cast(score as int)"), F.expr("try_cast(finalScore as int)")).alias("score")
         ).filter(F.col("userId").isNotNull())
