@@ -527,7 +527,7 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
                         signature = model.metadata.signature
                     elif hasattr(model.metadata, 'get_signature'):
                         try:
-                    signature = model.metadata.get_signature()
+                            signature = model.metadata.get_signature()
                         except:
                             pass
             
