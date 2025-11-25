@@ -244,7 +244,8 @@ salary_growth = compensation_df.withColumn(
 ).withColumn(
     'salary_growth_rate',
     F.when(F.size(F.col('salaries')) == 1, F.lit(0.0))
-    .otherwise((F.col('salaries')[0] - F.col('salaries')[1]) / F.col('salaries')[1])
+    .when(F.col('salaries')[1] == 0, F.lit(0.0))
+    .otherwise(F.expr("try_divide((salaries[0] - salaries[1]), salaries[1])"))
 ).select('employee_id', 'salary_growth_rate')
 
 # Advanced Feature Engineering: Department-level aggregates
@@ -316,17 +317,13 @@ master_features = employee_features \
 # Add ratio and interaction features
 master_features = master_features \
     .withColumn('salary_to_dept_avg', 
-                F.when(F.col('dept_avg_salary') > 0, F.col('base_salary') / F.col('dept_avg_salary'))
-                .otherwise(1.0)) \
+                F.coalesce(F.expr("try_divide(base_salary, dept_avg_salary)"), F.lit(1.0))) \
     .withColumn('tenure_to_dept_avg',
-                F.when(F.col('dept_avg_tenure') > 0, F.col('tenure_months') / F.col('dept_avg_tenure'))
-                .otherwise(1.0)) \
+                F.coalesce(F.expr("try_divide(tenure_months, dept_avg_tenure)"), F.lit(1.0))) \
     .withColumn('learning_hours_per_month',
-                F.when(F.col('tenure_months') > 0, F.col('total_learning_hours') / F.col('tenure_months'))
-                .otherwise(0)) \
+                F.coalesce(F.expr("try_divide(total_learning_hours, tenure_months)"), F.lit(0.0))) \
     .withColumn('salary_per_month_tenure',
-                F.when(F.col('tenure_months') > 0, F.col('base_salary') / F.col('tenure_months'))
-                .otherwise(0)) \
+                F.coalesce(F.expr("try_divide(base_salary, tenure_months)"), F.lit(0.0))) \
     .withColumn('performance_x_tenure', F.col('latest_performance_rating') * F.col('tenure_months')) \
     .withColumn('performance_x_salary_growth', F.col('latest_performance_rating') * F.greatest(F.col('salary_growth_rate'), F.lit(0)))
 
