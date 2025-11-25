@@ -637,19 +637,29 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
             except Exception:
                 pass
         
-        # If we still don't have categoricals/numerics, try to infer from model signature (most reliable source)
+        # CRITICAL: If we have model signature, use it as the source of truth for categoricals
+        # This ensures we encode ALL categorical columns the model expects, even if they're not in tables
         if expected_features_from_signature:
-            if not all_possible_categoricals:
-                for feat in expected_features_from_signature:
-                    for prefix in ['gender_', 'department_', 'location_', 'employment_type_', 'performance_trend_']:
-                        if feat.startswith(prefix):
-                            all_possible_categoricals.append(feat)
-                            break
+            # Extract categoricals from signature (these are what the model actually expects)
+            signature_categoricals = []
+            signature_numerics = []
+            for feat in expected_features_from_signature:
+                is_categorical = False
+                for prefix in ['gender_', 'department_', 'location_', 'employment_type_', 'performance_trend_']:
+                    if feat.startswith(prefix):
+                        signature_categoricals.append(feat)
+                        is_categorical = True
+                        break
+                if not is_categorical:
+                    signature_numerics.append(feat)
             
-            if not all_possible_numerics:
-                for feat in expected_features_from_signature:
-                    if not any(feat.startswith(prefix) for prefix in ['gender_', 'department_', 'location_', 'employment_type_', 'performance_trend_']):
-                        all_possible_numerics.append(feat)
+            # Use signature categoricals as the definitive list (model expects these exact columns)
+            if signature_categoricals:
+                all_possible_categoricals = signature_categoricals
+            
+            # Use signature numerics as the definitive list (model expects these exact columns)
+            if signature_numerics:
+                all_possible_numerics = signature_numerics
     
     # Final fallback: if we have model signature, use it exclusively (most reliable source)
     # This ensures we always have features even if tables don't exist yet
@@ -885,35 +895,47 @@ def ensure_dataframe_schema(features_df, model):
     """Ensure DataFrame matches model's expected schema exactly"""
     try:
         from mlflow.pyfunc import PyFuncModel
+        expected_cols = None
+        
+        # Try multiple methods to get signature
         if isinstance(model, PyFuncModel) and hasattr(model, 'metadata') and model.metadata:
-            signature = model.metadata.get_signature()
-            if signature and signature.inputs:
-                expected_cols = [inp.name for inp in signature.inputs.inputs]
-                
-                # Create a new DataFrame with only expected columns
-                # First, ensure all expected columns exist (add missing ones with 0.0)
-                result_dict = {}
-                for col in expected_cols:
-                    if col in features_df.columns:
-                        # Column exists, use its value
-                        result_dict[col] = features_df[col].values[0] if len(features_df) > 0 else 0.0
+            try:
+                signature = model.metadata.get_signature()
+                if signature and signature.inputs:
+                    expected_cols = [inp.name for inp in signature.inputs.inputs]
+            except Exception:
+                pass
+        
+        # If we got expected columns from signature, use them
+        if expected_cols:
+            # Create a new DataFrame with only expected columns
+            # First, ensure all expected columns exist (add missing ones with 0.0)
+            result_dict = {}
+            for col in expected_cols:
+                if col in features_df.columns:
+                    # Column exists, use its value (handle single row DataFrame)
+                    if len(features_df) > 0:
+                        val = features_df[col].iloc[0] if hasattr(features_df[col], 'iloc') else features_df[col].values[0]
+                        result_dict[col] = val
                     else:
-                        # Column missing, add with 0.0
                         result_dict[col] = 0.0
-                
-                # Create new DataFrame with only expected columns in correct order
-                features_df = pd.DataFrame([result_dict], columns=expected_cols)
-                
-                # Ensure all values are numeric (convert if needed)
-                for col in expected_cols:
-                    if features_df[col].dtype == 'object':
-                        # Try to convert to numeric
-                        features_df[col] = pd.to_numeric(features_df[col], errors='coerce').fillna(0.0)
-                    elif features_df[col].dtype not in ['int64', 'float64', 'int32', 'float32']:
-                        # Convert to float for consistency
-                        features_df[col] = features_df[col].astype('float64')
-                
-                return features_df
+                else:
+                    # Column missing, add with 0.0
+                    result_dict[col] = 0.0
+            
+            # Create new DataFrame with only expected columns in correct order
+            features_df = pd.DataFrame([result_dict], columns=expected_cols)
+            
+            # Ensure all values are numeric (convert if needed)
+            for col in expected_cols:
+                if features_df[col].dtype == 'object':
+                    # Try to convert to numeric
+                    features_df[col] = pd.to_numeric(features_df[col], errors='coerce').fillna(0.0)
+                elif features_df[col].dtype not in ['int64', 'float64', 'int32', 'float32']:
+                    # Convert to float for consistency
+                    features_df[col] = features_df[col].astype('float64')
+            
+            return features_df
     except Exception as e:
         # If schema enforcement fails, try to at least remove obvious extra columns
         import warnings
