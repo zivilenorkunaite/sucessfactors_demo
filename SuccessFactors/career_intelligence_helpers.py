@@ -2866,16 +2866,57 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
     
     talent_pd = pd.DataFrame(talent_results)
     
-    # Sort by talent score and get top 20 for display
-    talent_pd = talent_pd.sort_values('talent_score', ascending=False)
-    
+    # Ensure diverse category representation for better visualization
+    # Prioritize having examples of "Ready for Promotion" and "Top Performer"
     print(f"\n   ✅ Talent analysis complete!")
     print(f"   📊 Processed {len(talent_results)} employees")
-    print(f"   🏆 Top {min(len(talent_pd), 20)} high-potential employees identified")
-    print(f"   📈 Talent score range: {talent_pd['talent_score'].min():.1f} - {talent_pd['talent_score'].max():.1f}")
     
-    # Return all results (already limited to top performers)
-    return talent_pd.head(20)
+    # Group by category to ensure diversity
+    category_counts = talent_pd['talent_category'].value_counts()
+    print(f"   📋 Categories found: {dict(category_counts)}")
+    
+    # Select diverse mix: prioritize "Ready for Promotion" and "Top Performer"
+    selected_indices = set()
+    final_selection = []
+    target_count = 20
+    
+    # Priority order for categories (want to see these in visualization)
+    priority_categories = ['Ready for Promotion', 'Promotion Ready', 'High Potential', 'Top Performer', 'Developing', 'Needs Development']
+    
+    # Select top examples from each priority category
+    for category in priority_categories:
+        if len(final_selection) >= target_count:
+            break
+        
+        category_employees = talent_pd[talent_pd['talent_category'] == category].sort_values('talent_score', ascending=False)
+        
+        if len(category_employees) > 0:
+            # For "Ready for Promotion" and "Top Performer", ensure we get at least 2-3 examples
+            if category in ['Ready for Promotion', 'Top Performer']:
+                num_to_select = min(3, len(category_employees), target_count - len(final_selection))
+            else:
+                # For other categories, select 1-2 examples
+                num_to_select = min(2, len(category_employees), target_count - len(final_selection))
+            
+            selected_from_category = category_employees.head(num_to_select)
+            final_selection.extend(selected_from_category.to_dict('records'))
+    
+    # If we still have slots, fill with highest talent scores regardless of category
+    if len(final_selection) < target_count:
+        remaining_needed = target_count - len(final_selection)
+        already_selected_ids = {emp['employee_id'] for emp in final_selection}
+        remaining_employees = talent_pd[~talent_pd['employee_id'].isin(already_selected_ids)].sort_values('talent_score', ascending=False)
+        final_selection.extend(remaining_employees.head(remaining_needed).to_dict('records'))
+    
+    # Create final DataFrame and sort by talent score
+    final_talent_pd = pd.DataFrame(final_selection[:target_count])
+    final_talent_pd = final_talent_pd.sort_values('talent_score', ascending=False)
+    
+    final_category_counts = final_talent_pd['talent_category'].value_counts()
+    print(f"   🏆 Selected {len(final_talent_pd)} employees with diverse categories: {dict(final_category_counts)}")
+    print(f"   📈 Talent score range: {final_talent_pd['talent_score'].min():.1f} - {final_talent_pd['talent_score'].max():.1f}")
+    
+    return final_talent_pd
 
 def display_talent_graphs(talent_pd, displayHTML):
     # Create enhanced talent discovery dashboard
