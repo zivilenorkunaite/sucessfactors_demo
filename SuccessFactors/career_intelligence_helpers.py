@@ -357,25 +357,24 @@ def prepare_ml_features_for_prediction(emp_dict, employees_df, spark, catalog_na
         dept_salary_std = 0.0
     
     # Compute months_since_last_review
-    # Skip this feature if performance reviews table is not accessible (authentication/permission issues)
+    # Read from Unity Catalog performance table (created by notebook 01)
     months_since_last_review = 0.0
     try:
         emp_id = emp_dict.get('employee_id')
         if emp_id:
-            # Try to access performance reviews table with timeout and better error handling
+            # Read from Unity Catalog performance table with normalized columns
             try:
-                # Use a more efficient query - only select needed columns and filter early
-                perf_df_raw = spark.sql(
-                    "SELECT subject_8995a2862a8343bd8390aaa82c46e881, modifiedAt FROM performance_reviews_dp.performancereviews.commentfeedback"
-                ).filter(
-                    F.col("subject_8995a2862a8343bd8390aaa82c46e881") == emp_id
-                ).orderBy(F.desc("modifiedAt")).limit(1)
+                # Use Unity Catalog table - already has normalized schema
+                perf_df = spark.table(f"{catalog_name}.{schema_name}.performance").filter(
+                    F.col("employee_id") == emp_id
+                ).orderBy(F.desc("review_date")).limit(1)
                 
-                # Collect with timeout handling
-                latest_review = perf_df_raw.collect()
+                # Use toLocalIterator for serverless compatibility instead of collect()
+                latest_review_iter = perf_df.toLocalIterator()
+                latest_review = next(latest_review_iter, None)
                 
                 if latest_review:
-                    review_date = latest_review[0].get('modifiedAt')
+                    review_date = latest_review.get('review_date')
                     if review_date:
                         if isinstance(review_date, str):
                             review_date = pd.to_datetime(review_date).date()
@@ -384,14 +383,8 @@ def prepare_ml_features_for_prediction(emp_dict, employees_df, spark, catalog_na
                         months_since = (datetime.now().date() - review_date).days / 30.0
                         months_since_last_review = max(0, months_since)
             except Exception as perf_error:
-                # Check if it's an authentication/permission error
-                error_str = str(perf_error).lower()
-                if any(keyword in error_str for keyword in ['permission', 'unauthorized', '401', '403', 'authentication', 'auth']):
-                    # Silently skip - performance reviews table not accessible
-                    months_since_last_review = 0.0
-                else:
-                    # Other errors - also skip but could log if needed
-                    months_since_last_review = 0.0
+                # If table doesn't exist or other errors, default to 0
+                months_since_last_review = 0.0
     except Exception as e:
         # Catch any other errors (network, timeout, etc.) and default to 0
         months_since_last_review = 0.0
@@ -446,11 +439,14 @@ def prepare_ml_features_for_prediction(emp_dict, employees_df, spark, catalog_na
     return features
 
 
-def prepare_features_for_model(features_dict, model=None):
+def prepare_features_for_model(features_dict, model=None, spark=None, catalog_name=None, schema_name=None):
     """Prepare features dictionary for ML model prediction, encoding categoricals
     
     If model is provided, ALWAYS use the model's signature to determine expected features.
     This ensures the DataFrame matches exactly what the model expects.
+    
+    If spark, catalog_name, and schema_name are provided, reads actual categorical and numeric
+    feature names from the master_features table instead of using hardcoded values.
     """
     # First, try to get expected features from model signature if available
     # CRITICAL: Always use signature if model is provided to ensure exact schema match
@@ -484,28 +480,134 @@ def prepare_features_for_model(features_dict, model=None):
             # Log but don't fail - will use fallback
             pass
     
-    # Generate ALL possible categorical columns (we'll filter to what's needed)
-    # Include all categories that might exist in the training data
-    all_possible_categoricals = [
-        'gender_Male', 'gender_Female', 'gender_Other', 'gender_Non_binary',
-        'department_Finance', 'department_Marketing', 'department_Product', 'department_Engineering', 
-        'department_Sales', 'department_Operations', 'department_HR', 'department_Legal',
-        'location_Sydney', 'location_Adelaide', 'location_Melbourne', 'location_Brisbane', 'location_Perth',
-        'employment_type_Part_time', 'employment_type_Full_time', 'employment_type_Contract',
-        'performance_trend_Improving', 'performance_trend_Declining', 'performance_trend_Stable', 'performance_trend_Rising'
-    ]
+    # Read actual categorical and numeric feature names from data tables
+    all_possible_categoricals = []
+    all_possible_numerics = []
     
-    all_possible_numerics = [
-        'age', 'job_level', 'tenure_months', 'months_in_current_role', 'base_salary',
-        'latest_performance_rating', 'latest_goals_achievement', 'latest_competency_rating',
-        'courses_completed', 'total_learning_hours', 'avg_learning_score', 'learning_categories_count',
-        'total_goals', 'avg_goal_achievement', 'goals_exceeded', 'goal_types_count',
-        'current_bonus_target', 'current_equity_value', 'salary_growth_rate',
-        'dept_avg_salary', 'dept_avg_performance', 'dept_avg_tenure', 'dept_salary_std',
-        'months_since_last_review',
-        'salary_to_dept_avg', 'tenure_to_dept_avg', 'learning_hours_per_month',
-        'salary_per_month_tenure', 'performance_x_tenure', 'performance_x_salary_growth'
-    ]
+    if spark is not None and catalog_name is not None and schema_name is not None:
+        # First, try to read from master_features table (has encoded features)
+        try:
+            master_features_df = spark.table(f"{catalog_name}.{schema_name}.master_features")
+            all_columns = master_features_df.columns
+            
+            # Extract categorical encoded columns (format: prefix_value, e.g., "gender_Male" or "department_1034")
+            categorical_prefixes = ['gender_', 'department_', 'location_', 'employment_type_', 'performance_trend_']
+            for col_name in all_columns:
+                for prefix in categorical_prefixes:
+                    if col_name.startswith(prefix):
+                        all_possible_categoricals.append(col_name)
+                        break
+            
+            # Extract numeric columns (exclude categorical encoded columns and non-feature columns)
+            non_feature_cols = ['employee_id', 'person_id', 'first_name', 'last_name', 'job_title', 
+                               'gender', 'department', 'location', 'employment_type', 'performance_trend',
+                               'employment_status', 'hire_date', 'current_job_start_date']
+            for col_name in all_columns:
+                if col_name not in non_feature_cols and col_name not in all_possible_categoricals:
+                    # Check if it's a numeric type by examining the schema
+                    try:
+                        col_type = dict(master_features_df.dtypes)[col_name]
+                        if col_type in ['int', 'bigint', 'double', 'float', 'decimal']:
+                            all_possible_numerics.append(col_name)
+                    except:
+                        # If we can't determine type, include it as numeric (will be filtered by signature anyway)
+                        all_possible_numerics.append(col_name)
+        except Exception:
+            # If master_features doesn't exist, try reading from employees table and generate categorical columns
+            try:
+                employees_df = spark.table(f"{catalog_name}.{schema_name}.employees")
+                
+                # Generate categorical columns from actual distinct values in employees table
+                categorical_cols = ['gender', 'department', 'location', 'employment_type']
+                for cat_col in categorical_cols:
+                    if cat_col in employees_df.columns:
+                        # Get distinct values using toLocalIterator for serverless compatibility
+                        distinct_vals = []
+                        try:
+                            distinct_df = employees_df.select(cat_col).distinct().filter(F.col(cat_col).isNotNull())
+                            for row in distinct_df.toLocalIterator():
+                                val = row[cat_col]
+                                if val is not None:
+                                    # Sanitize value to match encoding format (same as notebook 02)
+                                    safe_val = str(val).replace(' ', '_').replace('-', '_').replace('/', '_')
+                                    all_possible_categoricals.append(f"{cat_col}_{safe_val}")
+                        except Exception:
+                            pass
+                
+                # For performance_trend, read actual values from employees table if available
+                if 'performance_trend' in employees_df.columns:
+                    try:
+                        distinct_df = employees_df.select('performance_trend').distinct().filter(F.col('performance_trend').isNotNull())
+                        for row in distinct_df.toLocalIterator():
+                            val = row['performance_trend']
+                            if val is not None:
+                                safe_val = str(val).replace(' ', '_').replace('-', '_').replace('/', '_')
+                                all_possible_categoricals.append(f"performance_trend_{safe_val}")
+                    except Exception:
+                        pass
+                
+                # Extract numeric columns from employees table schema
+                numeric_cols = ['age', 'job_level', 'tenure_months', 'months_in_current_role', 'base_salary']
+                for col_name in employees_df.columns:
+                    if col_name in numeric_cols:
+                        all_possible_numerics.append(col_name)
+                    elif col_name not in categorical_cols and col_name not in ['employee_id', 'person_id', 'first_name', 'last_name', 'job_title', 'employment_status', 'hire_date', 'current_job_start_date']:
+                        try:
+                            col_type = dict(employees_df.dtypes)[col_name]
+                            if col_type in ['int', 'bigint', 'double', 'float', 'decimal']:
+                                all_possible_numerics.append(col_name)
+                        except:
+                            pass
+                
+                # Add common engineered features that might exist
+                engineered_features = [
+                    'latest_performance_rating', 'latest_goals_achievement', 'latest_competency_rating',
+                    'courses_completed', 'total_learning_hours', 'avg_learning_score', 'learning_categories_count',
+                    'total_goals', 'avg_goal_achievement', 'goals_exceeded', 'goal_types_count',
+                    'current_bonus_target', 'current_equity_value', 'salary_growth_rate',
+                    'dept_avg_salary', 'dept_avg_performance', 'dept_avg_tenure', 'dept_salary_std',
+                    'months_since_last_review',
+                    'salary_to_dept_avg', 'tenure_to_dept_avg', 'learning_hours_per_month',
+                    'salary_per_month_tenure', 'performance_x_tenure', 'performance_x_salary_growth'
+                ]
+                all_possible_numerics.extend(engineered_features)
+            except Exception:
+                pass
+        
+        # If we still don't have categoricals/numerics, try to infer from model signature (most reliable source)
+        if expected_features_from_signature:
+            if not all_possible_categoricals:
+                for feat in expected_features_from_signature:
+                    for prefix in ['gender_', 'department_', 'location_', 'employment_type_', 'performance_trend_']:
+                        if feat.startswith(prefix):
+                            all_possible_categoricals.append(feat)
+                            break
+            
+            if not all_possible_numerics:
+                for feat in expected_features_from_signature:
+                    if not any(feat.startswith(prefix) for prefix in ['gender_', 'department_', 'location_', 'employment_type_', 'performance_trend_']):
+                        all_possible_numerics.append(feat)
+    
+    # Final fallback: if we have model signature, use it exclusively (most reliable source)
+    # This ensures we always have features even if tables don't exist yet
+    if not all_possible_categoricals and not all_possible_numerics:
+        if expected_features_from_signature:
+            # Use signature as the source of truth - extract categoricals and numerics
+            for feat in expected_features_from_signature:
+                is_categorical = False
+                for prefix in ['gender_', 'department_', 'location_', 'employment_type_', 'performance_trend_']:
+                    if feat.startswith(prefix):
+                        all_possible_categoricals.append(feat)
+                        is_categorical = True
+                        break
+                if not is_categorical:
+                    all_possible_numerics.append(feat)
+        else:
+            raise ValueError(
+                f"Could not determine feature names from data tables or model signature. "
+                f"Please ensure tables exist: {catalog_name}.{schema_name}.master_features or {catalog_name}.{schema_name}.employees, "
+                f"or provide a model with a signature."
+            )
     
     # Get actual categorical values from input
     actual_gender = features_dict.get('gender', 'Male')
@@ -547,6 +649,7 @@ def prepare_features_for_model(features_dict, model=None):
         all_features[feat] = float(val) if val is not None else 0.0
     
     # Encode all possible categoricals
+    # Handle both string and numeric categorical values (e.g., department can be "Engineering" or 1034)
     for col_name in all_possible_categoricals:
         if col_name.startswith('gender_'):
             val = col_name.replace('gender_', '')
@@ -556,10 +659,12 @@ def prepare_features_for_model(features_dict, model=None):
                 all_features[col_name] = 1.0 if actual_gender_normalized == val else 0.0
         elif col_name.startswith('department_'):
             dept_val = col_name.replace('department_', '')
-            all_features[col_name] = 1.0 if str(actual_dept) == dept_val else 0.0
+            # Compare as strings to handle both numeric codes (1034) and string names (Engineering)
+            all_features[col_name] = 1.0 if str(actual_dept).strip() == str(dept_val).strip() else 0.0
         elif col_name.startswith('location_'):
             loc_val = col_name.replace('location_', '')
-            all_features[col_name] = 1.0 if str(actual_location) == loc_val else 0.0
+            # Compare as strings to handle both numeric codes (43) and string names (Sydney)
+            all_features[col_name] = 1.0 if str(actual_location).strip() == str(loc_val).strip() else 0.0
         elif col_name.startswith('employment_type_'):
             emp_val = col_name.replace('employment_type_', '')
             all_features[col_name] = 1.0 if mapped_emp_type == emp_val else 0.0
@@ -720,7 +825,7 @@ def explain_prediction(employee_id, model_name, career_models, employees_df,
     features_dict = prepare_ml_features_for_prediction(emp_dict, employees_df, spark, catalog_name, schema_name)
     # Pass model to get correct schema
     model_pipeline = career_models[model_name]
-    model_features = prepare_features_for_model(features_dict, model_pipeline)
+    model_features = prepare_features_for_model(features_dict, model_pipeline, spark, catalog_name, schema_name)
     
     # IMPROVED: Extract feature names using multiple fallback methods
     # Priority: 1. Model signature, 2. feature_names_in_, 3. model_features.keys(), 4. Hardcoded fallback
@@ -1307,50 +1412,18 @@ def init_environment(catalog_name,schema_name, displayHTML, spark):
 
     print("✅ Career Intelligence Engine initialized")
 
-    print("📊 Loading SAP SuccessFactors data from Data Products...")
+    print("📊 Loading data from Unity Catalog tables...")
 
     try:
-        # Load from SAP SuccessFactors Data Products using spark.sql (fast Databricks loading)
-        employees_df_raw = spark.sql(
-            "SELECT * FROM core_workforce_data_dp.coreworkforcedata.coreworkforce_standardfields"
-        )
+        # Load from Unity Catalog tables (created by notebook 01_data_generation.py)
+        # These tables have normalized schemas and are consistent with ML model features
+        employees_df = spark.table(f"{catalog_name}.{schema_name}.employees")
+        performance_df = spark.table(f"{catalog_name}.{schema_name}.performance")
         
-        performance_df_raw = spark.sql(
-            "SELECT * FROM performance_reviews_dp.performancereviews.commentfeedback"
-        )
-        
-        # Map columns to expected names (keep original structure, just add aliases)
-        employees_df = employees_df_raw.select(
-            F.col("userId").alias("employee_id"),
-            F.col("age"),
-            F.col("gender"),
-            F.col("department"),
-            F.col("jobTitle").alias("job_title"),
-            F.when(F.col("jobTitle").rlike("Manager|Director|VP|Chief"), 3)
-             .when(F.col("jobTitle").rlike("Senior|Lead|Principal|Staff"), 2)
-             .otherwise(1).alias("job_level"),
-            F.col("location"),
-            F.col("employmentType").alias("employment_type"),
-            F.col("annualSalary").alias("base_salary"),
-            (F.col("totalOrgTenureCalc") / 30).cast("int").alias("tenure_months"),
-            (F.col("totalPositionTenureCalc") / 30).cast("int").alias("months_in_current_role"),
-            F.col("employmentStatus").alias("employment_status"),
-            F.lit("Unknown").alias("first_name"),  # Add default if not in source
-            F.lit("Unknown").alias("last_name")    # Add default if not in source
-        )
-        
-        performance_df = performance_df_raw.select(
-            F.col("subject_8995a2862a8343bd8390aaa82c46e881").alias("employee_id"),
-            F.col("modifiedAt").alias("review_date"),
-            F.col("numberValue").alias("overall_rating"),
-            F.col("numberValue").alias("competency_rating"),
-            (F.col("numberValue") * 20).cast("int").alias("goals_achievement"),
-            F.col("id").cast("string").alias("review_id")
-        ).filter(F.col("numberValue").isNotNull() & (F.col("numberValue") > 0))
-        
-        print(f"✅ Data loaded: {employees_df.count():,} employees")
+        print("✅ Data loaded from Unity Catalog tables")
         
         # Create enriched employees view with performance metrics
+        # Get latest performance record per employee (keeping all records as per notebook 01, but using latest for enrichment)
         latest_performance = performance_df.withColumn(
             "row_num",
             F.row_number().over(
@@ -1360,6 +1433,7 @@ def init_environment(catalog_name,schema_name, displayHTML, spark):
         ).filter(F.col("row_num") == 1).drop("row_num")
         
         # Join employees with latest performance data
+        # Use normalized column names from Unity Catalog tables
         enriched_employees_df = employees_df.alias("e").join(
             latest_performance.alias("p"),
             F.col("e.employee_id") == F.col("p.employee_id"),
@@ -1587,43 +1661,44 @@ def build_context_summary(context, question=""):
 
 # Helper function to build Alex's context for AI queries
 def build_demo_employee_context(alex_data, catalog_name, schema_name, spark):
-    """Build context from actual data in the tables"""
+    """Build context from actual data in Unity Catalog tables"""
     if not alex_data or len(alex_data) == 0:
         return None
     
     alex = alex_data[0]
     
-    # Get additional data from related tables
+    # Get additional data from Unity Catalog tables (created by notebook 01)
     alex_id = alex.employee_id
     
-    # Get learning data for Alex
+    # Get learning data for Alex from Unity Catalog table
     try:
-        learning_df_raw = spark.sql(
-            "SELECT * FROM learning_history_dp.learninghistory.learningcompletion"
+        learning_df = spark.table(f"{catalog_name}.{schema_name}.learning")
+        # Use normalized column names from Unity Catalog table
+        alex_learning = learning_df.filter(F.col("employee_id") == alex_id).agg(
+            F.sum("hours_completed").alias("total_hours"),
+            F.countDistinct("learning_id").alias("courses_completed")
         )
-        # Map columns - userID is the employee_id column in learning data
-        alex_learning = learning_df_raw.filter(F.col("userID") == alex_id).agg(
-            F.sum("totalHours").alias("total_hours"),
-            F.countDistinct("componentID").alias("courses_completed")
-        ).collect()
-        learning_hours = alex_learning[0]['total_hours'] if alex_learning and alex_learning[0]['total_hours'] else 0
-        courses_count = alex_learning[0]['courses_completed'] if alex_learning and alex_learning[0]['courses_completed'] else 0
+        # Use toLocalIterator for serverless compatibility
+        learning_iter = alex_learning.toLocalIterator()
+        learning_row = next(learning_iter, None)
+        learning_hours = learning_row['total_hours'] if learning_row and learning_row['total_hours'] else 0
+        courses_count = learning_row['courses_completed'] if learning_row and learning_row['courses_completed'] else 0
     except Exception as e:
         learning_hours = 0
         courses_count = 0
     
-    # Get goals data for Alex
+    # Get goals data for Alex from Unity Catalog table
     try:
-        goals_df_raw = spark.sql(
-            "SELECT * FROM goals_data_dp.goalsdata.goalsdata"
+        goals_df = spark.table(f"{catalog_name}.{schema_name}.goals")
+        # Use normalized column names from Unity Catalog table
+        alex_goals = goals_df.filter(F.col("employee_id") == alex_id).agg(
+            F.avg("achievement_percentage").alias("avg_achievement")
         )
-        # Map columns - userId is the employee_id column in goals data
-        alex_goals = goals_df_raw.filter(F.col("userId") == alex_id).agg(
-            F.avg("rating").alias("avg_rating")
-        ).collect()
-        # Convert rating to achievement percentage (assuming rating is -1 to 5 scale)
-        avg_rating = alex_goals[0]['avg_rating'] if alex_goals and alex_goals[0]['avg_rating'] else 0
-        avg_goal_achievement = round(((avg_rating + 1) * 20), 1) if avg_rating > -999999 else 0
+        # Use toLocalIterator for serverless compatibility
+        goals_iter = alex_goals.toLocalIterator()
+        goals_row = next(goals_iter, None)
+        avg_goal_achievement = goals_row['avg_achievement'] if goals_row and goals_row['avg_achievement'] else 0
+        avg_goal_achievement = round(float(avg_goal_achievement), 1) if avg_goal_achievement else 0
     except Exception as e:
         avg_goal_achievement = 0
     
@@ -1759,7 +1834,7 @@ def generate_career_predictions(employee_data,career_models,employees_df,display
             
             # Prepare features matching model's expected schema - pass model to get correct schema
             # This will extract the signature and filter to ONLY the expected features in correct order
-            model_features = prepare_features_for_model(transition_features, career_models['career_success'])
+            model_features = prepare_features_for_model(transition_features, career_models['career_success'], spark, catalog_name, schema_name)
             
             # Create DataFrame with exactly the features the model expects (already filtered and ordered by prepare_features_for_model)
             features_df = pd.DataFrame([model_features])
@@ -2047,7 +2122,7 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
             raw_features = prepare_ml_features_for_prediction(emp_dict, employees_df, spark, catalog_name, schema_name)
             
             # Encode categoricals to match model schema
-            encoded_features = prepare_features_for_model(raw_features, reference_model)
+            encoded_features = prepare_features_for_model(raw_features, reference_model, spark, catalog_name, schema_name)
             employee_features_list.append(encoded_features)
             employee_data_list.append(emp_dict)
             
