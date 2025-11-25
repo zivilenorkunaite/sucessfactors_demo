@@ -2770,7 +2770,8 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
         talent_results.append({
             'name': full_name,
             'employee_id': emp_dict.get('employee_id', ''),
-            'department': dept_name,
+            'department': dept_name,  # This will be department_name if available, otherwise department code
+            'department_name': emp_dict.get('department_name') or dept_name,  # Explicit department_name column
             'current_level': emp_dict.get('current_level', 'Unknown'),
             'performance_rating': performance_rating,
             'engagement_score': engagement_score,
