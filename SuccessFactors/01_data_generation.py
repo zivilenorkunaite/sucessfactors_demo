@@ -1734,7 +1734,7 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
              .when(F.lower(F.col("learningItemName")).rlike("sales|sell"), "Sales Training")
              .when(F.lower(F.col("learningItemName")).rlike("compliance|legal|policy"), "Compliance")
              .otherwise("Technical Skills").alias("category"),
-            F.coalesce(F.expr("try_cast(completionDate as date)"), F.expr("try_cast(completedDate as date)"), F.current_date()).alias("completion_date"),
+            F.coalesce(F.expr("try_cast(completionDate as date)"), F.expr("try_cast(completionDate as date)"), F.current_date()).alias("completion_date"),
             F.coalesce(F.expr("try_cast(hoursCompleted as int)"), F.expr("try_cast(totalHours as int)"), F.lit(0)).alias("hours_completed"),
             completion_status_expr,
             F.coalesce(F.expr("try_cast(score as int)"), F.expr("try_cast(finalScore as int)")).alias("score")
@@ -1891,6 +1891,21 @@ def _collect_employees_list_if_needed(employees_df_prepared):
         # Use toLocalIterator() to process in batches instead of collecting all at once
         # This reduces driver memory pressure for large datasets
         for row in employees_df_prepared.toLocalIterator():
+            # Extract tenure values up front so they are always available
+            try:
+                tenure_months = row['tenure_months']
+                if tenure_months is None:
+                    tenure_months = 0
+            except (KeyError, IndexError):
+                tenure_months = 0
+            
+            try:
+                months_in_current_role = row['months_in_current_role']
+                if months_in_current_role is None:
+                    months_in_current_role = 0
+            except (KeyError, IndexError):
+                months_in_current_role = 0
+            
             # Use existing date columns if available, otherwise calculate from tenure
             try:
                 hire_date_val = row['hire_date']
@@ -1899,12 +1914,9 @@ def _collect_employees_list_if_needed(employees_df_prepared):
                         hire_date_val = datetime.strptime(hire_date_val, '%Y-%m-%d').date()
                     elif hasattr(hire_date_val, 'date'):
                         hire_date_val = hire_date_val.date()
+                else:
+                    hire_date_val = date.today() - timedelta(days=int(tenure_months * 30))
             except (KeyError, IndexError):
-                # Fallback: calculate from tenure_months
-                try:
-                    tenure_months = row['tenure_months'] if row['tenure_months'] is not None else 0
-                except (KeyError, IndexError):
-                    tenure_months = 0
                 hire_date_val = date.today() - timedelta(days=int(tenure_months * 30))
             
             try:
@@ -1914,12 +1926,9 @@ def _collect_employees_list_if_needed(employees_df_prepared):
                         job_start_val = datetime.strptime(job_start_val, '%Y-%m-%d').date()
                     elif hasattr(job_start_val, 'date'):
                         job_start_val = job_start_val.date()
+                else:
+                    job_start_val = date.today() - timedelta(days=int(months_in_current_role * 30))
             except (KeyError, IndexError):
-                # Fallback: calculate from months_in_current_role
-                try:
-                    months_in_current_role = row['months_in_current_role'] if row['months_in_current_role'] is not None else 0
-                except (KeyError, IndexError):
-                    months_in_current_role = 0
                 job_start_val = date.today() - timedelta(days=int(months_in_current_role * 30))
             
             employees_list.append({
