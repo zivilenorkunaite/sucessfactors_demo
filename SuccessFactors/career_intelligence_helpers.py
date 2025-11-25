@@ -890,20 +890,19 @@ def ensure_dataframe_schema(features_df, model):
             if signature and signature.inputs:
                 expected_cols = [inp.name for inp in signature.inputs.inputs]
                 
-                # Get current columns
-                current_cols = list(features_df.columns)
-                
-                # Create a new DataFrame with columns in the exact order expected by the model
+                # Create a new DataFrame with only expected columns
                 # First, ensure all expected columns exist (add missing ones with 0.0)
+                result_dict = {}
                 for col in expected_cols:
-                    if col not in features_df.columns:
-                        features_df[col] = 0.0
+                    if col in features_df.columns:
+                        # Column exists, use its value
+                        result_dict[col] = features_df[col].values[0] if len(features_df) > 0 else 0.0
+                    else:
+                        # Column missing, add with 0.0
+                        result_dict[col] = 0.0
                 
-                # Remove any extra columns that model doesn't expect
-                cols_to_keep = [col for col in expected_cols if col in features_df.columns]
-                
-                # Reorder to match signature order exactly and keep only expected columns
-                features_df = features_df[expected_cols]
+                # Create new DataFrame with only expected columns in correct order
+                features_df = pd.DataFrame([result_dict], columns=expected_cols)
                 
                 # Ensure all values are numeric (convert if needed)
                 for col in expected_cols:
@@ -916,11 +915,15 @@ def ensure_dataframe_schema(features_df, model):
                 
                 return features_df
     except Exception as e:
-        # Log the error but don't fail - return DataFrame as-is
-        # This allows the code to continue even if schema enforcement fails
+        # If schema enforcement fails, try to at least remove obvious extra columns
         import warnings
-        warnings.warn(f"Schema enforcement failed: {str(e)[:100]}. Using DataFrame as-is.")
-        pass  # If schema enforcement fails, return DataFrame as-is
+        warnings.warn(f"Schema enforcement failed: {str(e)[:100]}. Attempting basic cleanup.")
+        # Remove common extra columns that shouldn't be in model features
+        extra_cols_to_remove = ['department_name', 'location_name', 'age', 'first_name', 'last_name', 
+                                'employee_id', 'person_id', 'job_title', 'employment_status']
+        cols_to_keep = [col for col in features_df.columns if col not in extra_cols_to_remove]
+        if cols_to_keep:
+            features_df = features_df[cols_to_keep]
     
     return features_df
 
@@ -1124,7 +1127,7 @@ def explain_prediction(employee_id, model_name, career_models, employees_df,
 # Career prediction helper functions
 def get_potential_next_roles(emp_dict):
     """Get potential next roles based on current position"""
-    dept = emp_dict.get('department', 'Engineering')
+    dept = emp_dict.get('department_name', 'Engineering')
     current_level = emp_dict.get('level_index') or emp_dict.get('job_level') or 1
     # Ensure current_level is an integer and not None
     if current_level is None:
@@ -2013,20 +2016,9 @@ def generate_career_predictions(employee_data,career_models,employees_df,display
             except Exception:
                 pass
             
-            # Create DataFrame with explicit column order if we have it
-            if expected_cols:
-                # Ensure all expected columns exist in model_features, add missing ones with 0.0
-                for col in expected_cols:
-                    if col not in model_features:
-                        model_features[col] = 0.0
-                # Create DataFrame with columns in exact order expected by model
-                features_df = pd.DataFrame([model_features], columns=expected_cols)
-                # Ensure all columns are float64
-                for col in expected_cols:
-                    features_df[col] = features_df[col].astype('float64')
-            else:
-                # Fallback: create DataFrame normally
-                features_df = pd.DataFrame([model_features])
+            # Create DataFrame - ensure_dataframe_schema will handle filtering and ordering
+            # Create initial DataFrame with all features
+            features_df = pd.DataFrame([model_features])
             
             # CRITICAL: Enforce exact schema match - remove extra columns and ensure all required columns exist
             # This ensures columns are in the right order and all required columns are present
