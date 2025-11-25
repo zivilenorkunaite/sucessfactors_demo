@@ -324,8 +324,53 @@ def prepare_ml_features_for_prediction(emp_dict, employees_df, spark, catalog_na
     department = emp_dict.get('department', 'Engineering')
     
     # Compute department-level aggregates from employees_df
+    # Handle both department name (string) and department code (numeric)
     try:
-        dept_stats = employees_df.filter(F.col('department') == department).agg(
+        # Check if department_name column exists (preferred)
+        has_dept_name_col = 'department_name' in employees_df.columns
+        
+        if has_dept_name_col:
+            # Use department_name column for filtering
+            dept_filter = F.col('department_name') == department
+        else:
+            # Convert department name to code if needed, or use as-is if already numeric
+            # Try to convert department name to code using reverse mapping
+            try:
+                from app_config import DEPARTMENT_CODE_TO_NAME
+                dept_code = None
+                if isinstance(department, str):
+                    # Reverse lookup: find code for department name
+                    for code, name in DEPARTMENT_CODE_TO_NAME.items():
+                        if name == department:
+                            dept_code = code
+                            break
+                    # If not found, try to parse as integer
+                    if dept_code is None:
+                        try:
+                            dept_code = int(department)
+                        except ValueError:
+                            dept_code = None
+                else:
+                    dept_code = department
+                
+                if dept_code is not None:
+                    # Use numeric comparison with try_cast to handle type mismatches
+                    dept_filter = (F.col('department') == dept_code) | (F.expr("try_cast(department as string)") == str(dept_code))
+                else:
+                    # Fallback: try string comparison on department_name if available, otherwise cast department
+                    if 'department_name' in employees_df.columns:
+                        dept_filter = F.col('department_name') == department
+                    else:
+                        dept_filter = F.expr("try_cast(department as string)") == str(department)
+            except ImportError:
+                # If app_config not available, try direct comparison
+                if isinstance(department, (int, float)):
+                    dept_filter = F.col('department') == department
+                else:
+                    # Try string comparison
+                    dept_filter = F.expr("try_cast(department as string)") == str(department)
+        
+        dept_stats = employees_df.filter(dept_filter).agg(
             F.avg('base_salary').alias('dept_avg_salary'),
             F.avg('performance_rating').alias('dept_avg_performance'),
             F.avg('months_in_company').alias('dept_avg_tenure'),
@@ -1627,8 +1672,14 @@ def build_context_summary(context, question=""):
         
         # Detect if this is about engineering team
         if 'engineering' in combined_text or 'engineer' in combined_text:
+            # Use department_name if available, otherwise try casting department to string
+            if 'department_name' in employees_df.columns:
+                dept_filter = F.lower(F.col('department_name')).contains('engineering')
+            else:
+                dept_filter = F.lower(F.expr("try_cast(department as string)")).contains('engineering')
+            
             eng_employees = employees_df.filter(
-                (F.lower(F.col('department')).contains('engineering')) |
+                dept_filter |
                 (F.lower(F.col('job_title')).contains('engineer')) |
                 (F.lower(F.col('job_title')).contains('developer')) |
                 (F.lower(F.col('job_title')).contains('software'))
@@ -1682,9 +1733,13 @@ def build_context_summary(context, question=""):
         department_keywords = ['sales', 'marketing', 'hr', 'finance', 'operations', 'product', 'design', 'qa', 'quality']
         for dept in department_keywords:
             if dept in combined_text:
-                dept_employees = employees_df.filter(
-                    F.lower(F.col('department')).contains(dept)
-                ).select(
+                # Use department_name if available, otherwise try casting department to string
+                if 'department_name' in employees_df.columns:
+                    dept_filter = F.lower(F.col('department_name')).contains(dept)
+                else:
+                    dept_filter = F.lower(F.expr("try_cast(department as string)")).contains(dept)
+                
+                dept_employees = employees_df.filter(dept_filter).select(
                     'first_name', 'last_name', 'job_title', 'job_level',
                     'performance_rating', 'potential_score', 'months_in_current_role'
                 ).collect()
