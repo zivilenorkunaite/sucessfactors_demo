@@ -2372,15 +2372,64 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
         raise ValueError("❌ High potential model required but not loaded.")
     
     # Use ML models for discovery
-    # Get top 20 active employees - use same filter as notebook (Active or A)
-    # Order by performance rating to get top performers first
-    print("   📊 Selecting top 20 employees for analysis...")
-    all_employees = employees_df.filter(
+    # Get diverse mix of 20 active employees - stratified by department for better representation
+    print("   📊 Selecting diverse mix of 20 employees for analysis...")
+    
+    # First, get active employees
+    active_employees_df = employees_df.filter(
         F.col('employment_status').isin(['Active', 'A'])
-    ).orderBy(
-        F.desc(F.coalesce(F.col('performance_rating'), F.lit(3.0))),
-        F.desc(F.coalesce(F.col('potential_score'), F.lit(70.0)))
-    ).limit(20).collect()
+    )
+    
+    # Count employees per department
+    dept_counts = active_employees_df.groupBy(
+        F.coalesce(F.col('department_name'), F.expr("try_cast(department as string)")).alias('dept_name')
+    ).count().orderBy(F.desc('count'))
+    
+    # Get list of departments
+    dept_list = [row['dept_name'] for row in dept_counts.collect()]
+    
+    # Calculate how many employees to select per department (aim for ~3-4 per dept, but prioritize larger depts)
+    total_to_select = 20
+    selected_employees = []
+    
+    if len(dept_list) > 0:
+        # Allocate employees per department (proportional but ensure at least 1 per dept)
+        employees_per_dept = max(1, total_to_select // len(dept_list))
+        remaining = total_to_select
+        
+        for dept_name in dept_list[:10]:  # Limit to top 10 departments
+            if remaining <= 0:
+                break
+            
+            # Select top performers from this department
+            dept_employees = active_employees_df.filter(
+                F.coalesce(F.col('department_name'), F.expr("try_cast(department as string)")) == dept_name
+            ).orderBy(
+                F.desc(F.coalesce(F.col('performance_rating'), F.lit(3.0))),
+                F.desc(F.coalesce(F.col('potential_score'), F.lit(70.0)))
+            ).limit(employees_per_dept).collect()
+            
+            selected_employees.extend(dept_employees)
+            remaining -= len(dept_employees)
+        
+        # If we still need more, fill from remaining departments or top performers overall
+        if remaining > 0:
+            already_selected_ids = {emp.asDict().get('employee_id') for emp in selected_employees}
+            additional = active_employees_df.filter(
+                ~F.col('employee_id').isin(list(already_selected_ids))
+            ).orderBy(
+                F.desc(F.coalesce(F.col('performance_rating'), F.lit(3.0))),
+                F.desc(F.coalesce(F.col('potential_score'), F.lit(70.0)))
+            ).limit(remaining).collect()
+            selected_employees.extend(additional)
+        
+        all_employees = selected_employees[:total_to_select]
+    else:
+        # Fallback: just get top 20 by performance
+        all_employees = active_employees_df.orderBy(
+            F.desc(F.coalesce(F.col('performance_rating'), F.lit(3.0))),
+            F.desc(F.coalesce(F.col('potential_score'), F.lit(70.0)))
+        ).limit(20).collect()
     
     print(f"   ✅ Selected {len(all_employees)} employees for analysis")
     
@@ -2442,20 +2491,22 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
                 }
         else:
             # Group by numeric department code
-            dept_stats_df = employees_df.groupBy('department').agg(
-                F.avg('base_salary').alias('dept_avg_salary'),
-                F.avg('performance_rating').alias('dept_avg_performance'),
-                F.avg('months_in_company').alias('dept_avg_tenure'),
-                F.stddev('base_salary').alias('dept_salary_std')
-            ).collect()
-            for row in dept_stats_df:
-                dept = row['department']
-                dept_stats_cache[dept] = {
-                    'dept_avg_salary': row['dept_avg_salary'] or 0.0,
-                    'dept_avg_performance': row['dept_avg_performance'] or 3.0,
-                    'dept_avg_tenure': row['dept_avg_tenure'] or 12.0,
-                    'dept_salary_std': row['dept_salary_std'] or 0.0
-                }
+        # Use department_name if available, fallback to department code
+        dept_col = F.coalesce(F.col('department_name'), F.expr("try_cast(department as string)"))
+        dept_stats_df = employees_df.groupBy(dept_col.alias('department')).agg(
+            F.avg('base_salary').alias('dept_avg_salary'),
+            F.avg('performance_rating').alias('dept_avg_performance'),
+            F.avg('months_in_company').alias('dept_avg_tenure'),
+            F.stddev('base_salary').alias('dept_salary_std')
+        ).collect()
+        for row in dept_stats_df:
+            dept = row['department']
+            dept_stats_cache[dept] = {
+                'dept_avg_salary': row['dept_avg_salary'] or 0.0,
+                'dept_avg_performance': row['dept_avg_performance'] or 3.0,
+                'dept_avg_tenure': row['dept_avg_tenure'] or 12.0,
+                'dept_salary_std': row['dept_salary_std'] or 0.0
+            }
         print(f"   ✅ Cached statistics for {len(dept_stats_cache)} departments")
     except Exception as e:
         print(f"   ⚠️ Could not cache department stats: {str(e)[:100]}")
@@ -2710,10 +2761,16 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
             leadership_readiness = 65
         leadership_readiness = float(leadership_readiness)
         
+        # Use department_name if available, fallback to department code
+        dept_name = emp_dict.get('department_name') or emp_dict.get('department', 'Unknown')
+        if isinstance(dept_name, (int, float)) and dept_name not in [None, 'Unknown']:
+            # If it's a numeric code, try to convert to string or use as-is
+            dept_name = str(int(dept_name)) if dept_name else 'Unknown'
+        
         talent_results.append({
             'name': full_name,
             'employee_id': emp_dict.get('employee_id', ''),
-            'department': emp_dict.get('department', 'Unknown'),
+            'department': dept_name,
             'current_level': emp_dict.get('current_level', 'Unknown'),
             'performance_rating': performance_rating,
             'engagement_score': engagement_score,
@@ -2786,7 +2843,9 @@ def display_talent_graphs(talent_pd, displayHTML):
     )
 
     # Bar chart - Department count (more informative than mean)
-    dept_counts = talent_pd.groupby('department').size().sort_values(ascending=True)
+    # Use department_name if available, otherwise use department
+    dept_col = 'department_name' if 'department_name' in talent_pd.columns else 'department'
+    dept_counts = talent_pd.groupby(dept_col).size().sort_values(ascending=True)
     dept_colors = px.colors.qualitative.Set3[:len(dept_counts)]
     fig.add_trace(
         go.Bar(x=dept_counts.values, 
