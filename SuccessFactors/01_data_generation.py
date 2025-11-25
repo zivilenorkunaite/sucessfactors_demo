@@ -887,8 +887,8 @@ def ensure_alex_in_employees_df(employees_df):
     else:
         print(f"   ➕ Adding Alex Smith demo record (employee_id: {ALEX_EMPLOYEE_ID})...")
     
-    # Create Alex's DataFrame - only include fields that are in the final schema
-    # Exclude hire_date, current_job_start_date, and manager_id as they're not in employees DataFrame
+    # Create Alex's DataFrame - include all fields that are in the final schema
+    # Now includes hire_date and current_job_start_date columns
     alex_record_for_df = {
         'employee_id': str(alex_record['employee_id']),
         'person_id': str(alex_record['person_id']),
@@ -904,7 +904,9 @@ def ensure_alex_in_employees_df(employees_df):
         'months_in_current_role': int(alex_record['months_in_current_role']),
         'employment_status': str(alex_record['employment_status']),
         'first_name': str(alex_record['first_name']),
-        'last_name': str(alex_record['last_name'])
+        'last_name': str(alex_record['last_name']),
+        'hire_date': alex_record['hire_date'],
+        'current_job_start_date': alex_record['current_job_start_date']
     }
     
     # Create DataFrame - explicit type casting ensures schema compatibility
@@ -923,7 +925,9 @@ def ensure_alex_in_employees_df(employees_df):
         F.col("months_in_current_role").cast("integer").alias("months_in_current_role"),
         F.col("employment_status").alias("employment_status"),
         F.col("first_name").alias("first_name"),
-        F.col("last_name").alias("last_name")
+        F.col("last_name").alias("last_name"),
+        F.col("hire_date").cast("date").alias("hire_date"),
+        F.col("current_job_start_date").cast("date").alias("current_job_start_date")
     )
     
     # Union Alex's record with the rest
