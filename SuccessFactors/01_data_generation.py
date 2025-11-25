@@ -1388,6 +1388,15 @@ def load_employees_from_data_product(generated_employees=None):
             get_last_name_udf(F.col("employee_id"))
         )
         
+        # Add computed date columns needed for goals and compensation generation
+        # This eliminates the need for _prepare_employees_df_for_generation()
+        employees_df = employees_df.withColumn(
+            "hire_date",
+            F.date_sub(F.current_date(), F.col("tenure_months") * 30)
+        ).withColumn(
+            "current_job_start_date",
+            F.date_sub(F.current_date(), F.col("months_in_current_role") * 30)
+        )
         
         final_count = employees_df.count()
         print(f"✅ Transformed employees data: {final_count:,} records")
@@ -1429,6 +1438,16 @@ def load_employees_from_data_product(generated_employees=None):
             F.col("employment_status").alias("employment_status"),
             F.col("first_name").alias("first_name"),
             F.col("last_name").alias("last_name")
+        )
+        
+        # Add computed date columns needed for goals and compensation generation
+        # This eliminates the need for _prepare_employees_df_for_generation()
+        employees_df = employees_df.withColumn(
+            "hire_date",
+            F.date_sub(F.current_date(), F.col("tenure_months") * 30)
+        ).withColumn(
+            "current_job_start_date",
+            F.date_sub(F.current_date(), F.col("months_in_current_role") * 30)
         )
         
         final_count = employees_df.count()
@@ -1616,55 +1635,71 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
         has_component_id = "componentID" in learning_df_raw.columns or "componentId" in learning_df_raw.columns
         component_id_col = "componentID" if "componentID" in learning_df_raw.columns else ("componentId" if "componentId" in learning_df_raw.columns else None)
         
+        # Check if learningItemName column exists (may have different casing)
+        has_learning_item_name = "learningItemName" in learning_df_raw.columns
+        learning_item_name_col = "learningItemName" if has_learning_item_name else None
+        
         # Check if completionStatus column exists (may have different casing)
         has_completion_status = "completionStatus" in learning_df_raw.columns or "completion_status" in learning_df_raw.columns
         completion_status_col = "completionStatus" if "completionStatus" in learning_df_raw.columns else ("completion_status" if "completion_status" in learning_df_raw.columns else None)
         
+        # Build the learningItemName generation expression
         if has_component_id and component_id_col:
-            # Generate learningItemName based on componentID
-            # Map specific componentID values to course names that align with category patterns
-            learning_df_raw = learning_df_raw.withColumn(
-                "learningItemName",
-                F.when(
-                    (F.col("learningItemName").isNull()) | (F.trim(F.col("learningItemName")) == ""),
-                    # Map specific componentID values to course names
-                    F.when(F.lower(F.col(component_id_col)) == "hr-601", "HR Policies and Procedures Training")
-                     .when(F.lower(F.col(component_id_col)) == "harvardmm_3001", "Harvard Business Management Course")
-                     .when(F.lower(F.col(component_id_col)).rlike("hr_302|hr_302_a"), "HR Compliance and Regulations")
-                     .when(F.lower(F.col(component_id_col)) == "hr_0001", "HR Fundamentals")
-                     .when(F.lower(F.col(component_id_col)) == "hr_300", "HR Advanced Practices")
-                     .when(F.lower(F.col(component_id_col)) == "hr_301", "HR Management Skills")
-                     .when(F.lower(F.col(component_id_col)) == "hr-344", "HR Policy Update")
-                     .when(F.lower(F.col(component_id_col)).rlike("hr.*sop|hr-sop-disc|sa_hr_sop"), "HR Standard Operating Procedures")
-                     .when(F.lower(F.col(component_id_col)).rlike("lead-dt01|lead-dt02"), "Leadership Development Program")
-                     .when(F.lower(F.col(component_id_col)) == "glen_logbook1", "Professional Development Logbook")
-                     .when(F.lower(F.col(component_id_col)) == "pm001", "Project Management Fundamentals")
-                     .when(F.lower(F.col(component_id_col)) == "tech-dt01", "Technical Skills Development")
-                     .when(F.lower(F.col(component_id_col)) == "t-454", "Technical Training Course T-454")
-                     .when(F.lower(F.col(component_id_col)).rlike("sf_learning|sf_overview|mobile_sf_overview"), "SuccessFactors Platform Overview")
-                     .when(F.lower(F.col(component_id_col)) == "coursera_2021", "Coursera Professional Development")
-                     .when(F.lower(F.col(component_id_col)).rlike("han_safety|safety|confined_space|sunfun_confined_space"), "Safety and Compliance Training")
-                     .when(F.lower(F.col(component_id_col)).rlike("flift|license"), "Forklift License Certification")
-                     .when(F.lower(F.col(component_id_col)) == "rm", "Risk Management Fundamentals")
-                     .when(F.lower(F.col(component_id_col)) == "rs-2", "Risk Management Advanced")
-                     .when(F.lower(F.col(component_id_col)) == "vpol_ethics", "Ethics and Compliance Policy")
-                     .when(F.lower(F.col(component_id_col)) == "opensesame_4005", "OpenSesame Learning Course")
-                     .when(F.lower(F.col(component_id_col)).rlike("black_resp|black_respsourcing"), "Responsible Sourcing Training")
-                     .when(F.lower(F.col(component_id_col)).rlike("sales.*ilt|sales_5000470028"), "Sales Training Program")
-                     .when(F.lower(F.col(component_id_col)).rlike("mobile"), "Mobile Learning Module")
-                     # For any other componentID, generate a generic course name
-                     .otherwise(F.concat(F.lit("Learning Course - "), F.col(component_id_col)))
-                ).otherwise(F.col("learningItemName"))
+            # Map specific componentID values to course names
+            name_generation_expr = (
+                F.when(F.lower(F.col(component_id_col)) == "hr-601", "HR Policies and Procedures Training")
+                 .when(F.lower(F.col(component_id_col)) == "harvardmm_3001", "Harvard Business Management Course")
+                 .when(F.lower(F.col(component_id_col)).rlike("hr_302|hr_302_a"), "HR Compliance and Regulations")
+                 .when(F.lower(F.col(component_id_col)) == "hr_0001", "HR Fundamentals")
+                 .when(F.lower(F.col(component_id_col)) == "hr_300", "HR Advanced Practices")
+                 .when(F.lower(F.col(component_id_col)) == "hr_301", "HR Management Skills")
+                 .when(F.lower(F.col(component_id_col)) == "hr-344", "HR Policy Update")
+                 .when(F.lower(F.col(component_id_col)).rlike("hr.*sop|hr-sop-disc|sa_hr_sop"), "HR Standard Operating Procedures")
+                 .when(F.lower(F.col(component_id_col)).rlike("lead-dt01|lead-dt02"), "Leadership Development Program")
+                 .when(F.lower(F.col(component_id_col)) == "glen_logbook1", "Professional Development Logbook")
+                 .when(F.lower(F.col(component_id_col)) == "pm001", "Project Management Fundamentals")
+                 .when(F.lower(F.col(component_id_col)) == "tech-dt01", "Technical Skills Development")
+                 .when(F.lower(F.col(component_id_col)) == "t-454", "Technical Training Course T-454")
+                 .when(F.lower(F.col(component_id_col)).rlike("sf_learning|sf_overview|mobile_sf_overview"), "SuccessFactors Platform Overview")
+                 .when(F.lower(F.col(component_id_col)) == "coursera_2021", "Coursera Professional Development")
+                 .when(F.lower(F.col(component_id_col)).rlike("han_safety|safety|confined_space|sunfun_confined_space"), "Safety and Compliance Training")
+                 .when(F.lower(F.col(component_id_col)).rlike("flift|license"), "Forklift License Certification")
+                 .when(F.lower(F.col(component_id_col)) == "rm", "Risk Management Fundamentals")
+                 .when(F.lower(F.col(component_id_col)) == "rs-2", "Risk Management Advanced")
+                 .when(F.lower(F.col(component_id_col)) == "vpol_ethics", "Ethics and Compliance Policy")
+                 .when(F.lower(F.col(component_id_col)) == "opensesame_4005", "OpenSesame Learning Course")
+                 .when(F.lower(F.col(component_id_col)).rlike("black_resp|black_respsourcing"), "Responsible Sourcing Training")
+                 .when(F.lower(F.col(component_id_col)).rlike("sales.*ilt|sales_5000470028"), "Sales Training Program")
+                 .when(F.lower(F.col(component_id_col)).rlike("mobile"), "Mobile Learning Module")
+                 # For any other componentID, generate a generic course name
+                 .otherwise(F.concat(F.lit("Learning Course - "), F.col(component_id_col)))
             )
+            
+            # Generate learningItemName: use existing value if column exists and has value, otherwise generate from componentID
+            if has_learning_item_name and learning_item_name_col:
+                # Column exists - use it if not null/empty, otherwise generate from componentID
+                learning_df_raw = learning_df_raw.withColumn(
+                    "learningItemName",
+                    F.when(
+                        (F.col(learning_item_name_col).isNotNull()) & (F.trim(F.col(learning_item_name_col)) != ""),
+                        F.col(learning_item_name_col)
+                    ).otherwise(name_generation_expr)
+                )
+            else:
+                # Column doesn't exist - always generate from componentID
+                learning_df_raw = learning_df_raw.withColumn("learningItemName", name_generation_expr)
+        elif not has_learning_item_name:
+            # No componentID and no learningItemName - use default
+            learning_df_raw = learning_df_raw.withColumn("learningItemName", F.lit("Unknown Course"))
         
         # Map columns to expected names
         # Use try_cast to handle malformed values
         # Map completion status IDs to strings: "1"->Completed, "2"->In Progress, "3"->Not Started
         
         # Build completion status expression outside of select
-        completion_status_expr = F.when(F.col("completionStatusId") == COMPLETION_STATUS_ID_COMPLETED, COMPLETION_STATUS_COMPLETED)
+        completion_status_expr = (F.when(F.col("completionStatusId") == COMPLETION_STATUS_ID_COMPLETED, COMPLETION_STATUS_COMPLETED)
          .when(F.col("completionStatusId") == COMPLETION_STATUS_ID_IN_PROGRESS, COMPLETION_STATUS_IN_PROGRESS)
-         .when(F.col("completionStatusId") == COMPLETION_STATUS_ID_NOT_STARTED, COMPLETION_STATUS_NOT_STARTED)
+         .when(F.col("completionStatusId") == COMPLETION_STATUS_ID_NOT_STARTED, COMPLETION_STATUS_NOT_STARTED))
         
         # If completionStatus column exists, check for recognized codes
         if has_completion_status and completion_status_col:
@@ -1842,6 +1877,7 @@ def _collect_employees_list_if_needed(employees_df_prepared):
     """
     Collect employees list from DataFrame only when fallback generation is needed.
     This avoids unnecessary collection when data products are available.
+    employees_df now includes hire_date and current_job_start_date columns.
     """
     if employees_df_prepared is None:
         return None
@@ -1851,21 +1887,36 @@ def _collect_employees_list_if_needed(employees_df_prepared):
         # Use toLocalIterator() to process in batches instead of collecting all at once
         # This reduces driver memory pressure for large datasets
         for row in employees_df_prepared.toLocalIterator():
-            # Calculate hire_date and current_job_start_date from tenure_months and months_in_current_role
-            # The employees_df doesn't have these date columns, so we calculate them
+            # Use existing date columns if available, otherwise calculate from tenure
             try:
-                tenure_months = row['tenure_months'] if row['tenure_months'] is not None else 0
+                hire_date_val = row['hire_date']
+                if hire_date_val is not None:
+                    if isinstance(hire_date_val, str):
+                        hire_date_val = datetime.strptime(hire_date_val, '%Y-%m-%d').date()
+                    elif hasattr(hire_date_val, 'date'):
+                        hire_date_val = hire_date_val.date()
             except (KeyError, IndexError):
-                tenure_months = 0
+                # Fallback: calculate from tenure_months
+                try:
+                    tenure_months = row['tenure_months'] if row['tenure_months'] is not None else 0
+                except (KeyError, IndexError):
+                    tenure_months = 0
+                hire_date_val = date.today() - timedelta(days=int(tenure_months * 30))
             
             try:
-                months_in_current_role = row['months_in_current_role'] if row['months_in_current_role'] is not None else 0
+                job_start_val = row['current_job_start_date']
+                if job_start_val is not None:
+                    if isinstance(job_start_val, str):
+                        job_start_val = datetime.strptime(job_start_val, '%Y-%m-%d').date()
+                    elif hasattr(job_start_val, 'date'):
+                        job_start_val = job_start_val.date()
             except (KeyError, IndexError):
-                months_in_current_role = 0
-            
-            # Calculate dates from tenure
-            hire_date_val = date.today() - timedelta(days=int(tenure_months * 30))
-            job_start_val = date.today() - timedelta(days=int(months_in_current_role * 30))
+                # Fallback: calculate from months_in_current_role
+                try:
+                    months_in_current_role = row['months_in_current_role'] if row['months_in_current_role'] is not None else 0
+                except (KeyError, IndexError):
+                    months_in_current_role = 0
+                job_start_val = date.today() - timedelta(days=int(months_in_current_role * 30))
             
             employees_list.append({
                 'employee_id': row['employee_id'],
@@ -1917,18 +1968,12 @@ def load_or_generate_data():
 
     data_sources['employees'] = employees_source
     
-    # Prepare employees DataFrame for use in dependent datasets (adds computed date columns)
-    # Keep as DataFrame to avoid collecting unless fallback generation is needed
-    employees_df_for_dependencies = _prepare_employees_df_for_generation(employees_df)
-    if employees_df_for_dependencies is not None:
-        employees_count_for_deps = employees_df_for_dependencies.count()
-        print(f"   ℹ️ Prepared {employees_count_for_deps:,} employees DataFrame for dependent dataset generation")
-        # Will collect only if fallback generation is needed (lazy collection)
-        employees_list_for_dependencies = None  # Will be collected only when needed
-    else:
-        # If preparation failed, use None (will trigger generation if needed)
-        print("   ⚠️ Could not prepare employees DataFrame, will generate if needed")
-        employees_list_for_dependencies = None
+    # employees_df now includes hire_date and current_job_start_date columns
+    # No need for _prepare_employees_df_for_generation() - use employees_df directly
+    employees_count_for_deps = employees_df.count()
+    print(f"   ℹ️ Using {employees_count_for_deps:,} employees DataFrame for dependent dataset generation")
+    # Will collect only if fallback generation is needed (lazy collection)
+    employees_list_for_dependencies = None  # Will be collected only when needed
     
     # Try to load performance from data product (with fallback to generated)
     print("\n" + "="*80)
@@ -1974,9 +2019,9 @@ def load_or_generate_data():
     # Generate only what's needed for goals and compensation
     # Collect employees list only if needed (lazy collection)
     if employees_list_for_dependencies is None:
-        if employees_df_for_dependencies is not None:
+        if employees_df is not None:
             print("   → Collecting employees list from DataFrame for goals/compensation generation...")
-            employees_list_for_dependencies = _collect_employees_list_if_needed(employees_df_for_dependencies)
+            employees_list_for_dependencies = _collect_employees_list_if_needed(employees_df)
         else:
             print("   → Generating employees for goals/compensation...")
             employees_list_for_dependencies = generate_employees()
@@ -2118,7 +2163,6 @@ print("   Strategy: Try data products first, generate only if needed")
 
 data_sources = {}
 employees_list_for_dependencies = None
-employees_df_for_dependencies = None
 performance_reviews_df = None
 performance_reviews_list = None
 
@@ -2135,13 +2179,10 @@ print("="*80)
 employees_df, employees_source = load_employees_from_data_product(generated_employees=None)
 data_sources['employees'] = employees_source
 
-# Prepare employees DataFrame for use in dependent datasets (adds computed date columns)
-employees_df_for_dependencies = _prepare_employees_df_for_generation(employees_df)
-if employees_df_for_dependencies is not None:
-    employees_count_for_deps = employees_df_for_dependencies.count()
-    print(f"   ℹ️ Prepared {employees_count_for_deps:,} employees DataFrame for dependent dataset generation")
-else:
-    print("   ⚠️ Could not prepare employees DataFrame, will generate if needed")
+# employees_df now includes hire_date and current_job_start_date columns
+# No need for _prepare_employees_df_for_generation() - use employees_df directly
+employees_count_for_deps = employees_df.count()
+print(f"   ℹ️ Using {employees_count_for_deps:,} employees DataFrame for dependent dataset generation")
 
 # COMMAND ----------
 
@@ -2200,9 +2241,9 @@ print("   📦 Data Source: Generated (simulated) - No data products available")
 
 # Collect employees list only if needed (lazy collection)
 if employees_list_for_dependencies is None:
-    if employees_df_for_dependencies is not None:
+    if employees_df is not None:
         print("   → Collecting employees list from DataFrame for goals generation...")
-        employees_list_for_dependencies = _collect_employees_list_if_needed(employees_df_for_dependencies)
+        employees_list_for_dependencies = _collect_employees_list_if_needed(employees_df)
     else:
         print("   → Generating employees for goals...")
         employees_list_for_dependencies = generate_employees()
