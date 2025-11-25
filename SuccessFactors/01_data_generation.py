@@ -73,6 +73,15 @@ ACTIVE_STATUS_VALUES = ['A', 'ACTIVE', 'ACT']
 EMPLOYMENT_TYPES = ['Full-time', 'Part-time', 'Contract']
 EMPLOYMENT_STATUS_OPTIONS = ['Active', 'Terminated']
 
+# Employment Type Code Mapping (from SAP SuccessFactors Data Product)
+EMPLOYMENT_TYPE_CODE_MAPPING = {
+    3631: 'Full-time',
+    3637: 'Part-time',
+    3638: 'Contract'
+}
+# Default for all other codes
+DEFAULT_EMPLOYMENT_TYPE = 'Other'
+
 # Employee IDs
 ALEX_EMPLOYEE_ID = 'EMP100038'
 
@@ -848,8 +857,38 @@ def load_employees_from_data_product(generated_employees=None):
         
         # Map columns to expected names (same as notebook 03)
         # Use try_cast to handle malformed values (e.g., '<10' in age field)
+        # Generate person_id: use personId if it exists and is not null, otherwise generate from userId
+        # Format: PER{employee_id_number + 50000} to match generated data pattern
+        has_person_id_col = "personId" in employees_df_raw.columns
+        
+        if has_person_id_col:
+            person_id_expr = F.coalesce(
+                F.col("personId"),
+                F.when(
+                    F.expr("try_cast(regexp_replace(userId, '[^0-9]', '') as int)").isNotNull(),
+                    F.concat(
+                        F.lit("PER"),
+                        (F.expr("try_cast(regexp_replace(userId, '[^0-9]', '') as int)") + 50000).cast("string")
+                    )
+                ).otherwise(
+                    F.concat(F.lit("PER"), F.abs(F.hash(F.col("userId"))).cast("string"))
+                )
+            )
+        else:
+            # Generate person_id from userId when personId column doesn't exist
+            person_id_expr = F.when(
+                F.expr("try_cast(regexp_replace(userId, '[^0-9]', '') as int)").isNotNull(),
+                F.concat(
+                    F.lit("PER"),
+                    (F.expr("try_cast(regexp_replace(userId, '[^0-9]', '') as int)") + 50000).cast("string")
+                )
+            ).otherwise(
+                F.concat(F.lit("PER"), F.abs(F.hash(F.col("userId"))).cast("string"))
+            )
+        
         employees_df = employees_df_raw.select(
             F.col("userId").alias("employee_id"),
+            person_id_expr.alias("person_id"),
             F.coalesce(F.expr("try_cast(age as int)"), F.lit(DEFAULT_AGE)).alias("age"),  # Default to 30 if invalid
             F.col("gender").alias("gender"),
             F.col("department").alias("department"),
@@ -858,7 +897,14 @@ def load_employees_from_data_product(generated_employees=None):
              .when(F.col("jobTitle").rlike(JOB_TITLE_PATTERN_MID), 2)
              .otherwise(1).alias("job_level"),
             F.col("location").alias("location"),
-            F.col("employmentType").alias("employment_type"),
+            # Map employment type codes to strings: 3631->Full-time, 3637->Part-time, 3638->Contract, others->Other
+            # Use try_cast to handle cases where employmentType might be string or null
+            # Cast once and reuse to avoid multiple try_cast calls
+            F.when(F.expr("try_cast(employmentType as int)") == 3631, "Full-time")
+             .when(F.expr("try_cast(employmentType as int)") == 3637, "Part-time")
+             .when(F.expr("try_cast(employmentType as int)") == 3638, "Contract")
+             .when(F.col("employmentType").isNull(), DEFAULT_EMPLOYMENT_TYPE)  # Explicit NULL handling
+             .otherwise(DEFAULT_EMPLOYMENT_TYPE).alias("employment_type"),
             F.coalesce(F.expr("try_cast(annualSalary as int)"), F.lit(DEFAULT_SALARY)).alias("base_salary"),  # Default to 0 if invalid
             F.coalesce(F.expr("try_cast(totalOrgTenureCalc / 30 as int)"), F.lit(DEFAULT_TENURE_MONTHS)).alias("tenure_months"),  # Default to 0 if invalid
             F.coalesce(F.expr("try_cast(totalPositionTenureCalc / 30 as int)"), F.lit(DEFAULT_TENURE_MONTHS)).alias("months_in_current_role"),  # Default to 0 if invalid
@@ -944,6 +990,7 @@ def load_employees_from_data_product(generated_employees=None):
         employees_df_generated = spark.createDataFrame(generated_employees)
         employees_df = employees_df_generated.select(
             F.col("employee_id").alias("employee_id"),
+            F.col("person_id").alias("person_id"),
             F.col("age").cast("integer").alias("age"),
             F.col("gender").alias("gender"),
             F.col("department").alias("department"),
@@ -1487,7 +1534,8 @@ table_names = {
 
 for table_name, df in table_names.items():
     full_table_name = f"{catalog_name}.{schema_name}.{table_name}"
-    df.write.mode("overwrite").saveAsTable(full_table_name)
+    # Use overwriteSchema to prevent schema merge conflicts
+    df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(full_table_name)
     print(f"✅ Created table: {full_table_name} ({df.count():,} rows)")
 
 print(f"\n✅ All data saved to Unity Catalog: {catalog_name}.{schema_name}")
