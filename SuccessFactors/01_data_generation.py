@@ -642,14 +642,13 @@ def generate_goals(employees, performance_reviews):
     goal_types = ['Revenue Growth', 'Process Improvement', 'Skill Development', 'Team Building', 
                  'Innovation', 'Customer Satisfaction', 'Quality Improvement', 'Cost Reduction']
     
-    # Calculate base performance potential for each employee
+    # Calculate base performance potential for each employee (for all employees, not just active)
     employee_performance_potential = {}
     for emp in employees:
-        if is_employee_active(emp.get('employment_status')):
-            base_potential = 2.5 + (emp['job_level'] * 0.4)
-            individual_factor = np.random.normal(0, 0.5)
-            tenure_factor = min(0.5, emp['tenure_months'] / TENURE_FACTOR_BASE_MONTHS * 0.3)
-            employee_performance_potential[emp['employee_id']] = max(2.0, min(5.0, base_potential + individual_factor + tenure_factor))
+        base_potential = 2.5 + (emp.get('job_level', 1) * 0.4)
+        individual_factor = np.random.normal(0, 0.5)
+        tenure_factor = min(0.5, emp.get('tenure_months', 0) / TENURE_FACTOR_BASE_MONTHS * 0.3)
+        employee_performance_potential[emp['employee_id']] = max(2.0, min(5.0, base_potential + individual_factor + tenure_factor))
     
     # Special handling for Alex Smith
     employee_performance_potential[ALEX_EMPLOYEE_ID] = 4.2
@@ -661,18 +660,25 @@ def generate_goals(employees, performance_reviews):
         if emp_id not in latest_performance or review['review_date'] > latest_performance[emp_id]['review_date']:
             latest_performance[emp_id] = review
     
+    # Generate goals for ALL employees (not just active)
     for emp in employees:
-        if is_employee_active(emp.get('employment_status')):
-            # Get employee's performance level
-            emp_perf = latest_performance.get(emp['employee_id'], {})
-            perf_rating = emp_perf.get('overall_rating', employee_performance_potential.get(emp['employee_id'], 3.0))
-            goals_achievement_avg = emp_perf.get('goals_achievement', 85)
-            
-            # High performers may have more goals
+        # Get employee's performance level
+        emp_perf = latest_performance.get(emp['employee_id'], {})
+        perf_rating = emp_perf.get('overall_rating', employee_performance_potential.get(emp['employee_id'], 3.0))
+        goals_achievement_avg = emp_perf.get('goals_achievement', 85)
+        
+        # Determine number of goals based on employment status
+        is_active = is_employee_active(emp.get('employment_status'))
+        if is_active:
+            # Active employees: High performers may have more goals
             if perf_rating >= HIGH_PERFORMER_THRESHOLD:
                 num_goals = random.randint(4, 6)
             else:
                 num_goals = random.randint(2, 5)
+        else:
+            # Inactive employees: Generate minimal goals (1 goal with lower achievement)
+            num_goals = 1
+            goals_achievement_avg = max(50, goals_achievement_avg - 20)  # Lower achievement for inactive
             
             for goal_num in range(num_goals):
                 goal_start = emp['current_job_start_date'] + timedelta(days=random.randint(0, GOAL_START_RANGE_DAYS))
@@ -719,88 +725,256 @@ def generate_compensation(employees, performance_reviews):
     # Strong signal: Salary increases correlate with performance and promotions
     compensation_history = []
     
+    # Generate compensation for ALL employees (not just active)
     for emp in employees:
-        if is_employee_active(emp.get('employment_status')):
-            # Get employee's performance history
-            emp_reviews = [r for r in performance_reviews if r['employee_id'] == emp['employee_id']]
-            emp_reviews.sort(key=lambda x: x['review_date'])
-            
-            # Generate salary history with performance-based increases
-            num_adjustments = max(1, emp['tenure_months'] // 12)  # Annual adjustments
-            current_salary = emp['base_salary']
+        is_active = is_employee_active(emp.get('employment_status'))
+        # Get employee's performance history
+        emp_reviews = [r for r in performance_reviews if r['employee_id'] == emp['employee_id']]
+        emp_reviews.sort(key=lambda x: x['review_date'])
+        
+        if is_active:
+            # Active employees: Generate salary history with performance-based increases
+            num_adjustments = max(1, emp.get('tenure_months', 0) // 12)  # Annual adjustments
+            current_salary = emp.get('base_salary', DEFAULT_SALARY)
             starting_salary = int(current_salary * 0.85)  # Starting salary lower
+        else:
+            # Inactive employees: Generate only initial hire record
+            num_adjustments = 1
+            current_salary = emp.get('base_salary', DEFAULT_SALARY)
+            starting_salary = int(current_salary * 0.85)
+        
+        for adj_num in range(num_adjustments):
+            effective_date = emp.get('hire_date', date.today() - timedelta(days=365 * adj_num))
+            if effective_date > date.today():
+                effective_date = date.today() - timedelta(days=365 * adj_num)
             
-            for adj_num in range(num_adjustments):
-                effective_date = emp['hire_date'] + timedelta(days=365 * adj_num)
+            if adj_num == 0:
+                salary = starting_salary
+                reason = 'Initial Hire'
+            elif not is_active:
+                # Inactive employees: only initial hire
+                continue
+            else:
+                # Check if there was a promotion around this time
+                job_start = emp.get('current_job_start_date', effective_date)
+                days_diff = abs((effective_date - job_start).days)
                 
-                if adj_num == 0:
-                    salary = starting_salary
-                    reason = 'Initial Hire'
+                if days_diff < PROMOTION_WINDOW_DAYS:  # Promotion around this time
+                    # Promotion increase: 10-20%
+                    increase_pct = random.uniform(PROMOTION_INCREASE_MIN, PROMOTION_INCREASE_MAX)
+                    salary = int(salary * (1 + increase_pct))
+                    reason = 'Promotion'
                 else:
-                    # Check if there was a promotion around this time
-                    job_start = emp['current_job_start_date']
-                    days_diff = abs((effective_date - job_start).days)
+                    # Annual review increase based on performance
+                    # Find performance rating around this time
+                    relevant_review = None
+                    for review in emp_reviews:
+                        if abs((review['review_date'] - effective_date).days) < REVIEW_RELEVANCE_WINDOW_DAYS:
+                            relevant_review = review
+                            break
                     
-                    if days_diff < PROMOTION_WINDOW_DAYS:  # Promotion around this time
-                        # Promotion increase: 10-20%
-                        increase_pct = random.uniform(PROMOTION_INCREASE_MIN, PROMOTION_INCREASE_MAX)
-                        salary = int(salary * (1 + increase_pct))
-                        reason = 'Promotion'
-                    else:
-                        # Annual review increase based on performance
-                        # Find performance rating around this time
-                        relevant_review = None
-                        for review in emp_reviews:
-                            if abs((review['review_date'] - effective_date).days) < REVIEW_RELEVANCE_WINDOW_DAYS:
-                                relevant_review = review
-                                break
-                        
-                        if relevant_review:
-                            perf_rating = relevant_review['overall_rating']
-                            # Performance-based increases (strong signal)
-                            if perf_rating >= TOP_PERFORMER_THRESHOLD:
-                                increase_pct = random.uniform(TOP_PERFORMER_INCREASE_MIN, TOP_PERFORMER_INCREASE_MAX)  # Top performers
-                            elif perf_rating >= HIGH_PERFORMER_THRESHOLD:
-                                increase_pct = random.uniform(HIGH_PERFORMER_INCREASE_MIN, HIGH_PERFORMER_INCREASE_MAX)  # High performers
-                            elif perf_rating >= GOOD_PERFORMER_THRESHOLD:
-                                increase_pct = random.uniform(GOOD_PERFORMER_INCREASE_MIN, GOOD_PERFORMER_INCREASE_MAX)  # Good performers
-                            elif perf_rating >= AVERAGE_PERFORMER_THRESHOLD:
-                                increase_pct = random.uniform(AVERAGE_PERFORMER_INCREASE_MIN, AVERAGE_PERFORMER_INCREASE_MAX)  # Average performers
-                            else:
-                                increase_pct = random.uniform(LOW_PERFORMER_INCREASE_MIN, LOW_PERFORMER_INCREASE_MAX)   # Low performers
+                    if relevant_review:
+                        perf_rating = relevant_review['overall_rating']
+                        # Performance-based increases (strong signal)
+                        if perf_rating >= TOP_PERFORMER_THRESHOLD:
+                            increase_pct = random.uniform(TOP_PERFORMER_INCREASE_MIN, TOP_PERFORMER_INCREASE_MAX)  # Top performers
+                        elif perf_rating >= HIGH_PERFORMER_THRESHOLD:
+                            increase_pct = random.uniform(HIGH_PERFORMER_INCREASE_MIN, HIGH_PERFORMER_INCREASE_MAX)  # High performers
+                        elif perf_rating >= GOOD_PERFORMER_THRESHOLD:
+                            increase_pct = random.uniform(GOOD_PERFORMER_INCREASE_MIN, GOOD_PERFORMER_INCREASE_MAX)  # Good performers
+                        elif perf_rating >= AVERAGE_PERFORMER_THRESHOLD:
+                            increase_pct = random.uniform(AVERAGE_PERFORMER_INCREASE_MIN, AVERAGE_PERFORMER_INCREASE_MAX)  # Average performers
                         else:
-                            # Default increase if no review
-                            increase_pct = random.normalvariate(DEFAULT_INCREASE_MEAN, DEFAULT_INCREASE_STD)
-                        
-                        salary = int(salary * (1 + increase_pct))
-                        reason = 'Annual Review' if not relevant_review or relevant_review['overall_rating'] >= AVERAGE_PERFORMER_THRESHOLD else 'Merit Increase'
+                            increase_pct = random.uniform(LOW_PERFORMER_INCREASE_MIN, LOW_PERFORMER_INCREASE_MAX)   # Low performers
+                    else:
+                        # Default increase if no review
+                        increase_pct = random.normalvariate(DEFAULT_INCREASE_MEAN, DEFAULT_INCREASE_STD)
+                    
+                    salary = int(salary * (1 + increase_pct))
+                    reason = 'Annual Review' if not relevant_review or relevant_review['overall_rating'] >= AVERAGE_PERFORMER_THRESHOLD else 'Merit Increase'
                 
-                # Bonus target correlates with level and performance
-                if emp['job_level'] >= MIN_SENIOR_LEVEL:
-                    bonus_target = random.randint(SENIOR_LEVEL_BONUS_MIN, SENIOR_LEVEL_BONUS_MAX)
-                elif emp['job_level'] >= MIN_MANAGER_LEVEL:
-                    bonus_target = random.randint(MANAGER_LEVEL_BONUS_MIN, MANAGER_LEVEL_BONUS_MAX)
-                else:
-                    bonus_target = random.randint(0, 15)
-                
-                # Equity for higher levels
-                if emp['job_level'] >= MIN_MANAGER_LEVEL:
-                    equity = random.randint(SENIOR_LEVEL_EQUITY_MIN, SENIOR_LEVEL_EQUITY_MAX) if emp['job_level'] >= MIN_SENIOR_LEVEL else random.randint(MANAGER_LEVEL_EQUITY_MIN, MANAGER_LEVEL_EQUITY_MAX)
-                else:
-                    equity = 0
-                
-                compensation_history.append({
-                    'comp_id': f'COMP{random.randint(10000, 99999)}',
-                    'employee_id': emp['employee_id'],
-                    'effective_date': effective_date,
-                    'base_salary': int(salary),
-                    'bonus_target_pct': int(bonus_target),
-                    'equity_value': int(equity),
-                    'adjustment_reason': reason
-                })
+            # Bonus target correlates with level and performance
+            job_level = emp.get('job_level', 1)
+            if job_level >= MIN_SENIOR_LEVEL:
+                bonus_target = random.randint(SENIOR_LEVEL_BONUS_MIN, SENIOR_LEVEL_BONUS_MAX)
+            elif job_level >= MIN_MANAGER_LEVEL:
+                bonus_target = random.randint(MANAGER_LEVEL_BONUS_MIN, MANAGER_LEVEL_BONUS_MAX)
+            else:
+                bonus_target = random.randint(0, 15)
+            
+            # Equity for higher levels
+            if job_level >= MIN_MANAGER_LEVEL:
+                equity = random.randint(SENIOR_LEVEL_EQUITY_MIN, SENIOR_LEVEL_EQUITY_MAX) if job_level >= MIN_SENIOR_LEVEL else random.randint(MANAGER_LEVEL_EQUITY_MIN, MANAGER_LEVEL_EQUITY_MAX)
+            else:
+                equity = 0
+            
+            compensation_history.append({
+                'comp_id': f'COMP{random.randint(10000, 99999)}',
+                'employee_id': emp['employee_id'],
+                'effective_date': effective_date,
+                'base_salary': int(salary),
+                'bonus_target_pct': int(bonus_target),
+                'equity_value': int(equity),
+                'adjustment_reason': reason
+            })
     
     print(f"✅ Generated {len(compensation_history)} compensation records")
     return compensation_history
+
+
+# ============================================================================
+# HELPER FUNCTIONS FOR ENSURING COMPLETE DATA
+# ============================================================================
+
+def ensure_all_employees_have_performance_records(performance_df, employees_df, employees_list=None):
+    """
+    Ensure every employee has at least one performance record.
+    Generates missing records for employees not in performance_df.
+    
+    Args:
+        performance_df: DataFrame with performance records (may be incomplete)
+        employees_df: DataFrame with all employees
+        employees_list: Optional list of employee dicts (for generation)
+        
+    Returns:
+        DataFrame with performance records for all employees
+    """
+    # Get list of employees that have performance records
+    employees_with_perf = performance_df.select("employee_id").distinct()
+    
+    # Get list of all employees
+    all_employees = employees_df.select("employee_id").distinct()
+    
+    # Find missing employees
+    missing_employees_df = all_employees.join(employees_with_perf, on="employee_id", how="left_anti")
+    missing_count = missing_employees_df.count()
+    
+    if missing_count > 0:
+        print(f"   ⚠️ Found {missing_count:,} employees without performance records. Generating missing records...")
+        
+        # Collect missing employee IDs
+        missing_employee_ids = [row['employee_id'] for row in missing_employees_df.toLocalIterator()]
+        
+        # Get full employee data for missing employees
+        if employees_list is None:
+            employees_list = _collect_employees_list_if_needed(employees_df)
+        
+        # Filter to only missing employees
+        missing_employees_list = [emp for emp in employees_list if emp['employee_id'] in missing_employee_ids]
+        
+        if missing_employees_list:
+            # Generate at least one performance review for each missing employee
+            generated_reviews = []
+            for emp in missing_employees_list:
+                # Generate a single review for missing employees
+                review_date = emp.get('hire_date', date.today() - timedelta(days=365))
+                if review_date > date.today():
+                    review_date = date.today() - timedelta(days=365)
+                
+                # Use default rating for missing employees
+                generated_reviews.append({
+                    'review_id': f'REV{random.randint(10000, 99999)}',
+                    'employee_id': emp['employee_id'],
+                    'review_period': int(review_date.year),
+                    'review_date': review_date,
+                    'overall_rating': float(DEFAULT_RATING),
+                    'goals_achievement': int(DEFAULT_GOALS_ACHIEVEMENT),
+                    'competency_rating': float(DEFAULT_RATING),
+                    'reviewer_id': emp.get('manager_id', f'EMP{random.randint(100001, 199999)}'),
+                    'status': COMPLETION_STATUS_COMPLETED
+                })
+            
+            # Convert to DataFrame and union with existing
+            missing_reviews_df = spark.createDataFrame(generated_reviews).select(
+                F.col("employee_id").alias("employee_id"),
+                F.col("review_date").alias("review_date"),
+                F.col("overall_rating").cast("double").alias("overall_rating"),
+                F.col("competency_rating").cast("double").alias("competency_rating"),
+                F.col("goals_achievement").cast("integer").alias("goals_achievement"),
+                F.col("review_id").cast("string").alias("review_id"),
+                F.col("review_period").cast("integer").alias("review_period"),
+                F.col("reviewer_id").alias("reviewer_id"),
+                F.col("status").alias("status")
+            )
+            
+            performance_df = performance_df.unionByName(missing_reviews_df)
+            print(f"   ✅ Generated {len(generated_reviews):,} performance records for missing employees")
+    
+    return performance_df
+
+
+def ensure_all_employees_have_learning_records(learning_df, employees_df, employees_list=None, performance_reviews_list=None):
+    """
+    Ensure every employee has at least one learning record.
+    Generates missing records for employees not in learning_df.
+    
+    Args:
+        learning_df: DataFrame with learning records (may be incomplete)
+        employees_df: DataFrame with all employees
+        employees_list: Optional list of employee dicts (for generation)
+        performance_reviews_list: Optional list of performance reviews (for generation)
+        
+    Returns:
+        DataFrame with learning records for all employees
+    """
+    # Get list of employees that have learning records
+    employees_with_learning = learning_df.select("employee_id").distinct()
+    
+    # Get list of all employees
+    all_employees = employees_df.select("employee_id").distinct()
+    
+    # Find missing employees
+    missing_employees_df = all_employees.join(employees_with_learning, on="employee_id", how="left_anti")
+    missing_count = missing_employees_df.count()
+    
+    if missing_count > 0:
+        print(f"   ⚠️ Found {missing_count:,} employees without learning records. Generating missing records...")
+        
+        # Collect missing employee IDs
+        missing_employee_ids = [row['employee_id'] for row in missing_employees_df.toLocalIterator()]
+        
+        # Get full employee data for missing employees
+        if employees_list is None:
+            employees_list = _collect_employees_list_if_needed(employees_df)
+        
+        # Filter to only missing employees
+        missing_employees_list = [emp for emp in employees_list if emp['employee_id'] in missing_employee_ids]
+        
+        if missing_employees_list:
+            # Generate at least one learning record for each missing employee
+            generated_learning = []
+            for emp in missing_employees_list:
+                completion_date = emp.get('hire_date', date.today() - timedelta(days=180))
+                if completion_date > date.today():
+                    completion_date = date.today() - timedelta(days=180)
+                
+                generated_learning.append({
+                    'learning_id': f'LRN{random.randint(10000, 99999)}',
+                    'employee_id': emp['employee_id'],
+                    'course_title': 'Onboarding Training',
+                    'category': 'Technical Skills',
+                    'completion_date': completion_date,
+                    'hours_completed': int(random.randint(2, 8)),
+                    'completion_status': COMPLETION_STATUS_COMPLETED,
+                    'score': int(random.randint(70, 90))
+                })
+            
+            # Convert to DataFrame and union with existing
+            missing_learning_df = spark.createDataFrame(generated_learning).select(
+                F.col("learning_id").cast("string").alias("learning_id"),
+                F.col("employee_id").cast("string").alias("employee_id"),
+                F.col("course_title").cast("string").alias("course_title"),
+                F.col("category").cast("string").alias("category"),
+                F.col("completion_date").cast("date").alias("completion_date"),
+                F.col("hours_completed").cast("integer").alias("hours_completed"),
+                F.col("completion_status").cast("string").alias("completion_status"),
+                F.col("score").cast("integer").alias("score")
+            )
+            
+            learning_df = learning_df.unionByName(missing_learning_df)
+            print(f"   ✅ Generated {len(generated_learning):,} learning records for missing employees")
+    
+    return learning_df
 
 
 # ============================================================================
@@ -1104,6 +1278,16 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
         
         final_count = performance_df.count()
         print(f"✅ Transformed performance data: {final_count:,} records")
+        
+        # Ensure all employees have at least one performance record
+        if employees_df is not None:
+            performance_df = ensure_all_employees_have_performance_records(
+                performance_df, employees_df, employees
+            )
+            final_count_after = performance_df.count()
+            if final_count_after > final_count:
+                print(f"   ✅ Ensured all employees have performance records: {final_count_after:,} total records")
+        
         print(f"   📊 Final Status: Using DATA PRODUCT data")
         return performance_df, 'DATA PRODUCT'  # Return source indicator
         
@@ -1152,7 +1336,17 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
         )
         
         final_count = performance_df.count()
-        print(f"✅ Using generated performance reviews data: {final_count:,} records")
+        
+        # Ensure all employees have at least one performance record
+        if employees_df is not None:
+            performance_df = ensure_all_employees_have_performance_records(
+                performance_df, employees_df, employees
+            )
+            final_count_after = performance_df.count()
+            if final_count_after > final_count:
+                print(f"   ✅ Ensured all employees have performance records: {final_count_after:,} total records")
+        
+        print(f"✅ Using generated performance reviews data: {performance_df.count():,} records")
         print(f"   📊 Final Status: Using GENERATED data (fallback)")
         return performance_df, 'GENERATED'  # Return source indicator
 
@@ -1214,6 +1408,16 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
         
         final_count = learning_df.count()
         print(f"✅ Transformed learning data: {final_count:,} records")
+        
+        # Ensure all employees have at least one learning record
+        if employees_df is not None:
+            learning_df = ensure_all_employees_have_learning_records(
+                learning_df, employees_df, employees_list, performance_reviews_list
+            )
+            final_count_after = learning_df.count()
+            if final_count_after > final_count:
+                print(f"   ✅ Ensured all employees have learning records: {final_count_after:,} total records")
+        
         print(f"   📊 Final Status: Using DATA PRODUCT data")
         return learning_df, 'DATA PRODUCT'  # Return source indicator
         
@@ -1289,7 +1493,17 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
         
         
         final_count = learning_df.count()
-        print(f"✅ Using generated learning records data: {final_count:,} records")
+        
+        # Ensure all employees have at least one learning record
+        if employees_df is not None:
+            learning_df = ensure_all_employees_have_learning_records(
+                learning_df, employees_df, employees_list, performance_reviews_list
+            )
+            final_count_after = learning_df.count()
+            if final_count_after > final_count:
+                print(f"   ✅ Ensured all employees have learning records: {final_count_after:,} total records")
+        
+        print(f"✅ Using generated learning records data: {learning_df.count():,} records")
         print(f"   📊 Final Status: Using GENERATED data (fallback)")
         return learning_df, 'GENERATED'  # Return source indicator
 
@@ -1426,7 +1640,7 @@ def load_or_generate_data():
     performance_df, performance_source = load_performance_from_data_product(
         generated_performance_reviews=None,
         employees=employees_list_for_dependencies,
-        employees_df=employees_df_for_dependencies  # Pass DataFrame for lazy collection
+        employees_df=employees_df  # Pass full employees_df to ensure completeness
     )
 
     data_sources['performance'] = performance_source
@@ -1445,7 +1659,7 @@ def load_or_generate_data():
     print("="*80)
     learning_df, learning_source = load_learning_from_data_product(
         generated_learning_records=None,
-        employees_df=employees_df_for_dependencies,  # Pass DataFrame instead of list
+        employees_df=employees_df,  # Pass full employees_df to ensure completeness
         employees_list=employees_list_for_dependencies,  # Keep for backward compatibility
         performance_reviews_df=performance_reviews_df,  # Pass DataFrame instead of list
         performance_reviews_list=performance_reviews_list  # Keep for backward compatibility
@@ -1591,8 +1805,237 @@ def load_or_generate_data():
     }, table_counts
 
 
-# Load or generate all data
-dataframes, table_counts = load_or_generate_data()
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 📊 Load or Generate Data
+# MAGIC ### *Load from data products first, generate if needed*
+
+# COMMAND ----------
+
+# Initialize tracking variables
+print("="*80)
+print("📊 Loading/Generating SAP SuccessFactors Data")
+print("="*80)
+print("   Strategy: Try data products first, generate only if needed")
+
+data_sources = {}
+employees_list_for_dependencies = None
+employees_df_for_dependencies = None
+performance_reviews_df = None
+performance_reviews_list = None
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Load/Generate Employees
+
+# COMMAND ----------
+
+print("\n" + "="*80)
+print("EMPLOYEES DATASET")
+print("="*80)
+employees_df, employees_source = load_employees_from_data_product(generated_employees=None)
+data_sources['employees'] = employees_source
+
+# Prepare employees DataFrame for use in dependent datasets (adds computed date columns)
+employees_df_for_dependencies = _prepare_employees_df_for_generation(employees_df)
+if employees_df_for_dependencies is not None:
+    employees_count_for_deps = employees_df_for_dependencies.count()
+    print(f"   ℹ️ Prepared {employees_count_for_deps:,} employees DataFrame for dependent dataset generation")
+else:
+    print("   ⚠️ Could not prepare employees DataFrame, will generate if needed")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Load/Generate Performance Reviews
+
+# COMMAND ----------
+
+print("\n" + "="*80)
+print("PERFORMANCE REVIEWS DATASET")
+print("="*80)
+performance_df, performance_source = load_performance_from_data_product(
+    generated_performance_reviews=None,
+    employees=employees_list_for_dependencies,
+    employees_df=employees_df  # Pass full employees_df to ensure completeness
+)
+data_sources['performance'] = performance_source
+
+# Keep performance reviews as DataFrame - will collect only if fallback generation is needed
+performance_reviews_df = performance_df.select(
+    'employee_id', 'review_date', 'overall_rating', 'competency_rating',
+    'goals_achievement', 'review_id', 'review_period', 'reviewer_id', 'status'
+)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Load/Generate Learning Records
+
+# COMMAND ----------
+
+print("\n" + "="*80)
+print("LEARNING RECORDS DATASET")
+print("="*80)
+learning_df, learning_source = load_learning_from_data_product(
+    generated_learning_records=None,
+    employees_df=employees_df,  # Pass full employees_df to ensure completeness
+    employees_list=employees_list_for_dependencies,
+    performance_reviews_df=performance_reviews_df,
+    performance_reviews_list=performance_reviews_list
+)
+data_sources['learning'] = learning_source
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Generate Goals
+
+# COMMAND ----------
+
+print("\n" + "="*80)
+print("GOALS DATASET")
+print("="*80)
+print("📊 Generating goals data...")
+print("   📦 Data Source: Generated (simulated) - No data products available")
+
+# Collect employees list only if needed (lazy collection)
+if employees_list_for_dependencies is None:
+    if employees_df_for_dependencies is not None:
+        print("   → Collecting employees list from DataFrame for goals generation...")
+        employees_list_for_dependencies = _collect_employees_list_if_needed(employees_df_for_dependencies)
+    else:
+        print("   → Generating employees for goals...")
+        employees_list_for_dependencies = generate_employees()
+        print(f"   ✅ Generated {len(employees_list_for_dependencies):,} employees")
+
+if employees_list_for_dependencies is None or len(employees_list_for_dependencies) == 0:
+    print("   → Generating employees for goals...")
+    employees_list_for_dependencies = generate_employees()
+    print(f"   ✅ Generated {len(employees_list_for_dependencies):,} employees")
+
+# Generate performance reviews if not already available (needed for goals)
+if performance_reviews_list is None:
+    if performance_reviews_df is not None:
+        print("   → Collecting performance reviews list from DataFrame for goals generation...")
+        try:
+            performance_reviews_list = [
+                {
+                    'employee_id': row['employee_id'],
+                    'review_date': row['review_date'],
+                    'overall_rating': row['overall_rating'],
+                    'competency_rating': row['competency_rating'],
+                    'goals_achievement': row['goals_achievement'],
+                    'review_id': row['review_id'],
+                    'review_period': row['review_period'],
+                    'reviewer_id': row['reviewer_id'],
+                    'status': row['status']
+                }
+                for row in performance_reviews_df.toLocalIterator()
+            ]
+        except Exception as e:
+            print(f"   ⚠️ Could not collect performance reviews: {e}")
+            performance_reviews_list = None
+
+if performance_reviews_list is None or len(performance_reviews_list) == 0:
+    print("   → Generating performance reviews for goals...")
+    performance_reviews_list = generate_performance_reviews(employees_list_for_dependencies)
+    print(f"   ✅ Generated {len(performance_reviews_list):,} performance reviews")
+
+# Generate goals
+print("   → Generating goals data...")
+goals_data = generate_goals(employees_list_for_dependencies, performance_reviews_list)
+print(f"   ✅ Generated {len(goals_data):,} goals")
+
+# Create goals DataFrame
+if len(goals_data) == 0:
+    print("   ⚠️ Warning: No goals generated. Creating empty DataFrame with schema...")
+    goals_schema = StructType([
+        StructField("goal_id", StringType(), True),
+        StructField("employee_id", StringType(), True),
+        StructField("goal_title", StringType(), True),
+        StructField("goal_type", StringType(), True),
+        StructField("start_date", DateType(), True),
+        StructField("target_date", DateType(), True),
+        StructField("achievement_percentage", IntegerType(), True),
+        StructField("weight", IntegerType(), True),
+        StructField("status", StringType(), True)
+    ])
+    goals_df = spark.createDataFrame([], schema=goals_schema)
+else:
+    goals_df = spark.createDataFrame(goals_data)
+
+data_sources['goals'] = 'GENERATED'
+print(f"✅ Goals: {goals_df.count():,} records (Generated)")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Generate Compensation
+
+# COMMAND ----------
+
+print("\n" + "="*80)
+print("COMPENSATION DATASET")
+print("="*80)
+print("📊 Generating compensation data...")
+print("   📦 Data Source: Generated (simulated) - No data products available")
+
+# Generate compensation
+print("   → Generating compensation data...")
+compensation_data = generate_compensation(employees_list_for_dependencies, performance_reviews_list)
+print(f"   ✅ Generated {len(compensation_data):,} compensation records")
+
+# Create compensation DataFrame
+if len(compensation_data) == 0:
+    print("   ⚠️ Warning: No compensation records generated. Creating empty DataFrame with schema...")
+    compensation_schema = StructType([
+        StructField("comp_id", StringType(), True),
+        StructField("employee_id", StringType(), True),
+        StructField("effective_date", DateType(), True),
+        StructField("base_salary", IntegerType(), True),
+        StructField("bonus_target_pct", IntegerType(), True),
+        StructField("equity_value", IntegerType(), True),
+        StructField("adjustment_reason", StringType(), True)
+    ])
+    compensation_df = spark.createDataFrame([], schema=compensation_schema)
+else:
+    compensation_df = spark.createDataFrame(compensation_data)
+
+data_sources['compensation'] = 'GENERATED'
+print(f"✅ Compensation: {compensation_df.count():,} records (Generated)")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Data Summary
+
+# COMMAND ----------
+
+# Compute counts and print summary
+table_counts = {
+    'employees': employees_df.count(),
+    'performance': performance_df.count(),
+    'learning': learning_df.count(),
+    'goals': goals_df.count(),
+    'compensation': compensation_df.count()
+}
+
+print("\n" + "="*80)
+print("📊 DATA SOURCE SUMMARY")
+print("="*80)
+print("Dataset                    | Source          | Records")
+print("-" * 80)
+print(f"Employees                  | {data_sources['employees']:<15} | {table_counts['employees']:>10,}")
+print(f"Performance Reviews         | {data_sources['performance']:<15} | {table_counts['performance']:>10,}")
+print(f"Learning Records           | {data_sources['learning']:<15} | {table_counts['learning']:>10,}")
+print(f"Goals                      | {data_sources['goals']:<15} | {table_counts['goals']:>10,}")
+print(f"Compensation               | {data_sources['compensation']:<15} | {table_counts['compensation']:>10,}")
+print("="*80)
+print("✅ All data loaded/generated successfully")
+print("="*80)
 
 # COMMAND ----------
 
@@ -1601,28 +2044,14 @@ dataframes, table_counts = load_or_generate_data()
 
 # COMMAND ----------
 
-# Extract dataframes from the loaded/generated data
-employees_df = dataframes['employees']
-performance_df = dataframes['performance']
-learning_df = dataframes['learning']
-goals_df = dataframes['goals']
-compensation_df = dataframes['compensation']
+# COMMAND ----------
 
-# Ensure consistent numeric types to avoid merge conflicts
-# Handle potential None values and ensure proper types
-# Use try_cast to safely handle malformed values
-performance_df = performance_df.withColumn("overall_rating", F.coalesce(F.expr("try_cast(overall_rating as double)"), F.lit(3.5))) \
-                                .withColumn("competency_rating", F.coalesce(F.expr("try_cast(competency_rating as double)"), F.lit(3.5))) \
-                                .withColumn("goals_achievement", F.coalesce(F.expr("try_cast(goals_achievement as int)"), F.lit(0)))
+# MAGIC %md
+# MAGIC ### Save Employees Table
 
-goals_df = goals_df.withColumn("achievement_percentage", F.coalesce(F.expr("try_cast(achievement_percentage as int)"), F.lit(0))) \
-                   .withColumn("weight", F.coalesce(F.expr("try_cast(weight as int)"), F.lit(0)))
+# COMMAND ----------
 
-compensation_df = compensation_df.withColumn("base_salary", F.coalesce(F.expr("try_cast(base_salary as int)"), F.lit(0))) \
-                                 .withColumn("bonus_target_pct", F.coalesce(F.expr("try_cast(bonus_target_pct as int)"), F.lit(0))) \
-                                 .withColumn("equity_value", F.coalesce(F.expr("try_cast(equity_value as int)"), F.lit(0)))
-
-# Ensure consistent numeric types for employees (already handled in transformation, but ensure types are correct)
+# Ensure consistent numeric types for employees
 # Use try_cast to safely handle malformed values
 employees_df = employees_df.withColumn("age", F.coalesce(F.expr("try_cast(age as int)"), F.lit(0))) \
                            .withColumn("base_salary", F.coalesce(F.expr("try_cast(base_salary as int)"), F.lit(0))) \
@@ -1632,19 +2061,82 @@ employees_df = employees_df.withColumn("age", F.coalesce(F.expr("try_cast(age as
                            .withColumn("first_name", F.coalesce(F.col("first_name"), F.lit("Unknown"))) \
                            .withColumn("last_name", F.coalesce(F.col("last_name"), F.lit("Unknown")))
 
-# Save as Unity Catalog tables (Delta tables)
-table_names = {
-    'employees': employees_df,
-    'performance': performance_df,
-    'learning': learning_df, 
-    'goals': goals_df,
-    'compensation': compensation_df
-}
+# Save employees table
+full_table_name = f"{catalog_name}.{schema_name}.employees"
+employees_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(full_table_name)
+print(f"✅ Created table: {full_table_name} ({table_counts['employees']:,} rows)")
 
-for table_name, df in table_names.items():
-    full_table_name = f"{catalog_name}.{schema_name}.{table_name}"
-    df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(full_table_name)
-    print(f"✅ Created table: {full_table_name} ({table_counts[table_name]:,} rows)")
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Save Performance Reviews Table
+
+# COMMAND ----------
+
+# Ensure consistent numeric types for performance reviews
+# Use try_cast to safely handle malformed values
+performance_df = performance_df.withColumn("overall_rating", F.coalesce(F.expr("try_cast(overall_rating as double)"), F.lit(3.5))) \
+                                .withColumn("competency_rating", F.coalesce(F.expr("try_cast(competency_rating as double)"), F.lit(3.5))) \
+                                .withColumn("goals_achievement", F.coalesce(F.expr("try_cast(goals_achievement as int)"), F.lit(0)))
+
+# Save performance table
+full_table_name = f"{catalog_name}.{schema_name}.performance"
+performance_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(full_table_name)
+print(f"✅ Created table: {full_table_name} ({table_counts['performance']:,} rows)")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Save Learning Records Table
+
+# COMMAND ----------
+
+# Save learning table
+full_table_name = f"{catalog_name}.{schema_name}.learning"
+learning_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(full_table_name)
+print(f"✅ Created table: {full_table_name} ({table_counts['learning']:,} rows)")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Save Goals Table
+
+# COMMAND ----------
+
+# Ensure consistent numeric types for goals
+# Use try_cast to safely handle malformed values
+goals_df = goals_df.withColumn("achievement_percentage", F.coalesce(F.expr("try_cast(achievement_percentage as int)"), F.lit(0))) \
+                   .withColumn("weight", F.coalesce(F.expr("try_cast(weight as int)"), F.lit(0)))
+
+# Save goals table
+full_table_name = f"{catalog_name}.{schema_name}.goals"
+goals_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(full_table_name)
+print(f"✅ Created table: {full_table_name} ({table_counts['goals']:,} rows)")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Save Compensation Table
+
+# COMMAND ----------
+
+# Ensure consistent numeric types for compensation
+# Use try_cast to safely handle malformed values
+compensation_df = compensation_df.withColumn("base_salary", F.coalesce(F.expr("try_cast(base_salary as int)"), F.lit(0))) \
+                                 .withColumn("bonus_target_pct", F.coalesce(F.expr("try_cast(bonus_target_pct as int)"), F.lit(0))) \
+                                 .withColumn("equity_value", F.coalesce(F.expr("try_cast(equity_value as int)"), F.lit(0)))
+
+# Save compensation table
+full_table_name = f"{catalog_name}.{schema_name}.compensation"
+compensation_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(full_table_name)
+print(f"✅ Created table: {full_table_name} ({table_counts['compensation']:,} rows)")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Summary
+
+# COMMAND ----------
 
 print(f"\n✅ All data saved to Unity Catalog: {catalog_name}.{schema_name}")
 
