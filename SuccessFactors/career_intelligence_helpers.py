@@ -2682,8 +2682,8 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
     for i, emp_dict in enumerate(employee_data_list):
         # Calculate talent score from ML predictions
         high_potential_score = float(predictions['high_potential'][i]) if i < len(predictions['high_potential']) else 0.5
-        readiness_score = float(predictions['readiness'][i]) if i < len(predictions['readiness']) else 70.0
-        risk_score = float(predictions['retention_risk'][i]) if i < len(predictions['retention_risk']) else 0.3
+        base_readiness_score = float(predictions['readiness'][i]) if i < len(predictions['readiness']) else 70.0
+        base_risk_score = float(predictions['retention_risk'][i]) if i < len(predictions['retention_risk']) else 0.3
         
         # Convert high_potential to probability if it's binary
         if high_potential_score <= 1.0 and high_potential_score >= 0.0:
@@ -2692,13 +2692,82 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
             # If model returns probability > 1, assume it's percentage and convert
             potential_prob = high_potential_score / 100.0 if high_potential_score > 1.0 else 0.5
         
-        # Ensure risk_score is normalized (0-1)
-        if risk_score > 1.0:
-            risk_score = risk_score / 100.0  # Convert percentage to probability
-        risk_score = max(0.0, min(1.0, risk_score))  # Ensure it's between 0 and 1
+        # Ensure base_risk_score is normalized (0-1)
+        if base_risk_score > 1.0:
+            base_risk_score = base_risk_score / 100.0  # Convert percentage to probability
+        base_risk_score = max(0.0, min(1.0, base_risk_score))  # Ensure it's between 0 and 1
         
-        # Normalize readiness_score to 0-1 range if needed
-        normalized_readiness = readiness_score / 100.0 if readiness_score > 1.0 else readiness_score
+        # Normalize base_readiness_score to 0-1 range if needed
+        normalized_base_readiness = base_readiness_score / 100.0 if base_readiness_score > 1.0 else base_readiness_score
+        
+        # Get employee-specific metrics for adjustments
+        performance_rating = emp_dict.get('performance_rating', 3.0)
+        if performance_rating is None:
+            performance_rating = 3.0
+        performance_rating = float(performance_rating)
+        
+        engagement_score = emp_dict.get('engagement_score', 70)
+        if engagement_score is None:
+            engagement_score = 70
+        engagement_score = float(engagement_score)
+        
+        months_in_role = emp_dict.get('months_in_current_role') or emp_dict.get('months_in_role', 12)
+        if months_in_role is None:
+            months_in_role = 12
+        months_in_role = int(months_in_role)
+        
+        total_learning_hours = emp_dict.get('total_learning_hours', 0) or 0
+        if total_learning_hours is None:
+            total_learning_hours = 0
+        total_learning_hours = float(total_learning_hours)
+        
+        tenure_months = emp_dict.get('tenure_months') or emp_dict.get('months_in_company', 12) or 12
+        if tenure_months is None:
+            tenure_months = 12
+        tenure_months = int(tenure_months)
+        
+        # Apply employee-specific adjustments to readiness_score
+        # Performance adjustment: higher performance = higher readiness
+        performance_adjustment = (performance_rating - 3.0) * 8.0  # ±16 points for 1.0-5.0 range
+        
+        # Learning adjustment: more learning = higher readiness
+        learning_adjustment = min(10.0, total_learning_hours / 5.0)  # Up to +10 points for 50+ hours
+        
+        # Tenure adjustment: optimal readiness at 18-36 months
+        if months_in_role < 12:
+            tenure_adjustment = -5.0  # Too new
+        elif months_in_role >= 12 and months_in_role < 24:
+            tenure_adjustment = 5.0  # Sweet spot
+        elif months_in_role >= 24 and months_in_role < 36:
+            tenure_adjustment = 3.0  # Still good
+        else:
+            tenure_adjustment = -3.0  # May be stale
+        
+        # Calculate adjusted readiness_score (0-100 scale)
+        readiness_score = normalized_base_readiness * 100.0 + performance_adjustment + learning_adjustment + tenure_adjustment
+        readiness_score = max(35.0, min(95.0, readiness_score))  # Cap between 35-95
+        
+        # Apply employee-specific adjustments to flight_risk
+        # Engagement adjustment: lower engagement = higher risk
+        engagement_risk = (100 - engagement_score) * 0.25  # Up to 25% risk for 0 engagement
+        
+        # Performance adjustment: lower performance = higher risk
+        performance_risk = max(0, (3.0 - performance_rating) * 8.0)  # Up to 16% risk for 1.0 rating
+        
+        # Tenure adjustment: very new (<6 months) or very long (>5 years) = higher risk
+        if tenure_months < 6:
+            tenure_risk = 10.0  # Very new employees
+        elif tenure_months > 60:
+            tenure_risk = 8.0  # May be looking for change
+        else:
+            tenure_risk = 0.0
+        
+        # Calculate adjusted risk_score (0-1 scale, then convert to percentage)
+        risk_score = base_risk_score + (engagement_risk + performance_risk + tenure_risk) / 100.0
+        risk_score = max(0.0, min(0.85, risk_score))  # Cap between 0-85%
+        
+        # Normalize for talent score calculation
+        normalized_readiness = readiness_score / 100.0
         
         # Enhanced composite talent score with more variation
         # Add performance and engagement bonuses to create more differentiation
