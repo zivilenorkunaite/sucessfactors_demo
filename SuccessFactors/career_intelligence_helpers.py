@@ -2770,18 +2770,7 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
         normalized_readiness = readiness_score / 100.0
         
         # Enhanced composite talent score with more variation
-        # Add performance and engagement bonuses to create more differentiation
-        # Ensure values are not None before arithmetic operations
-        performance_rating = emp_dict.get('performance_rating', 3.0)
-        if performance_rating is None:
-            performance_rating = 3.0
-        performance_rating = float(performance_rating)
-        
-        engagement_score = emp_dict.get('engagement_score', 70)
-        if engagement_score is None:
-            engagement_score = 70
-        engagement_score = float(engagement_score)
-        
+        # Performance and engagement already extracted above for adjustments
         performance_bonus = (performance_rating - 3.0) * 5  # Max +10 for 5.0 rating
         engagement_bonus = (engagement_score - 70) * 0.15  # Max +4.5 for 100 engagement
         
