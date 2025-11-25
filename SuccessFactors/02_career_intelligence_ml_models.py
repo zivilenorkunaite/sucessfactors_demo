@@ -36,8 +36,9 @@
 
 # COMMAND ----------
 
-# set mlflow experiment location
-experiment_path = "/Shared/career_path_intelligence_engine/career_intelligence_models"
+# Import experiment path from app_config
+from app_config import MLFLOW_EXPERIMENT_PATH
+experiment_path = MLFLOW_EXPERIMENT_PATH
 
 # COMMAND ----------
 

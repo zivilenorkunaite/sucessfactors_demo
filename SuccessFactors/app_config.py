@@ -13,3 +13,6 @@ DEFAULT_SCHEMA_NAME = "career_path_temp"
 # DEFAULT_CATALOG_NAME = "zivile"
 # DEFAULT_SCHEMA_NAME = "sap_demo"
 
+# MLflow Experiment Configuration
+MLFLOW_EXPERIMENT_PATH = "/Shared/career_path_intelligence_engine/career_intelligence_models_updated"
+
