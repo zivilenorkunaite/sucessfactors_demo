@@ -709,9 +709,20 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
     # Build ALL possible features first (needed for signature-based filtering)
     all_features = {}
     
-    # Add all numeric features (exclude raw name columns that should be encoded)
+    # CRITICAL: If we have signature, only add numeric features that are in the signature
+    # This prevents adding extra features that the model doesn't expect
     excluded_raw_cols = ['department_name', 'location_name', 'department', 'location', 'gender', 'employment_type', 'performance_trend']
-    for feat in all_possible_numerics:
+    
+    # Determine which numeric features to include
+    numerics_to_include = all_possible_numerics
+    if expected_features_from_signature:
+        # Only include numerics that are in the signature
+        signature_numerics = [f for f in expected_features_from_signature 
+                            if not any(f.startswith(prefix) for prefix in ['gender_', 'department_', 'location_', 'employment_type_', 'performance_trend_'])]
+        numerics_to_include = signature_numerics
+    
+    # Add numeric features (exclude raw name columns that should be encoded)
+    for feat in numerics_to_include:
         # Skip raw categorical columns that should be encoded, not used directly
         if feat not in excluded_raw_cols:
             val = features_dict.get(feat, 0)
@@ -2038,13 +2049,37 @@ def generate_career_predictions(employee_data,career_models,employees_df,display
             except Exception:
                 pass
             
-            # Create DataFrame - ensure_dataframe_schema will handle filtering and ordering
-            # Create initial DataFrame with all features
-            features_df = pd.DataFrame([model_features])
+            # CRITICAL: Get expected columns from model signature BEFORE creating DataFrame
+            # This ensures we only create DataFrame with columns the model expects
+            expected_cols_from_signature = None
+            try:
+                from mlflow.pyfunc import PyFuncModel
+                if isinstance(career_models['career_success'], PyFuncModel):
+                    if hasattr(career_models['career_success'], 'metadata') and career_models['career_success'].metadata:
+                        signature = career_models['career_success'].metadata.get_signature()
+                        if signature and signature.inputs:
+                            expected_cols_from_signature = [inp.name for inp in signature.inputs.inputs]
+            except Exception:
+                pass
             
-            # CRITICAL: Enforce exact schema match - remove extra columns and ensure all required columns exist
-            # This ensures columns are in the right order and all required columns are present
-            features_df = ensure_dataframe_schema(features_df, career_models['career_success'])
+            # Create DataFrame with only expected columns from signature
+            if expected_cols_from_signature:
+                # Ensure all expected columns exist in model_features, add missing ones with 0.0
+                for col in expected_cols_from_signature:
+                    if col not in model_features:
+                        model_features[col] = 0.0
+                
+                # Create DataFrame with ONLY expected columns in correct order
+                filtered_model_features = {col: model_features.get(col, 0.0) for col in expected_cols_from_signature}
+                features_df = pd.DataFrame([filtered_model_features], columns=expected_cols_from_signature)
+                
+                # Ensure all columns are float64
+                for col in expected_cols_from_signature:
+                    features_df[col] = pd.to_numeric(features_df[col], errors='coerce').fillna(0.0).astype('float64')
+            else:
+                # Fallback: create DataFrame and let ensure_dataframe_schema handle it
+                features_df = pd.DataFrame([model_features])
+                features_df = ensure_dataframe_schema(features_df, career_models['career_success'])
             
             # Get ML model prediction
             success_pred = career_models['career_success'].predict(features_df)
