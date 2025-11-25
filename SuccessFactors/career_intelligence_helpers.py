@@ -447,7 +447,7 @@ def prepare_ml_features_for_prediction(emp_dict, employees_df, spark, catalog_na
                         months_since_last_review = max(0, months_since)
             except Exception as perf_error:
                 # If table doesn't exist or other errors, default to 0
-                months_since_last_review = 0.0
+                    months_since_last_review = 0.0
     except Exception as e:
         # Catch any other errors (network, timeout, etc.) and default to 0
         months_since_last_review = 0.0
@@ -527,7 +527,7 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
                         signature = model.metadata.signature
                     elif hasattr(model.metadata, 'get_signature'):
                         try:
-                            signature = model.metadata.get_signature()
+                    signature = model.metadata.get_signature()
                         except:
                             pass
             
@@ -545,7 +545,7 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
                         signature = impl.metadata.signature
                     elif hasattr(impl.metadata, 'get_signature'):
                         try:
-                            signature = impl.metadata.get_signature()
+                    signature = impl.metadata.get_signature()
                         except:
                             pass
             
@@ -636,15 +636,15 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
                 
                 # Add common engineered features that might exist
                 engineered_features = [
-                    'latest_performance_rating', 'latest_goals_achievement', 'latest_competency_rating',
-                    'courses_completed', 'total_learning_hours', 'avg_learning_score', 'learning_categories_count',
-                    'total_goals', 'avg_goal_achievement', 'goals_exceeded', 'goal_types_count',
-                    'current_bonus_target', 'current_equity_value', 'salary_growth_rate',
-                    'dept_avg_salary', 'dept_avg_performance', 'dept_avg_tenure', 'dept_salary_std',
-                    'months_since_last_review',
-                    'salary_to_dept_avg', 'tenure_to_dept_avg', 'learning_hours_per_month',
-                    'salary_per_month_tenure', 'performance_x_tenure', 'performance_x_salary_growth'
-                ]
+        'latest_performance_rating', 'latest_goals_achievement', 'latest_competency_rating',
+        'courses_completed', 'total_learning_hours', 'avg_learning_score', 'learning_categories_count',
+        'total_goals', 'avg_goal_achievement', 'goals_exceeded', 'goal_types_count',
+        'current_bonus_target', 'current_equity_value', 'salary_growth_rate',
+        'dept_avg_salary', 'dept_avg_performance', 'dept_avg_tenure', 'dept_salary_std',
+        'months_since_last_review',
+        'salary_to_dept_avg', 'tenure_to_dept_avg', 'learning_hours_per_month',
+        'salary_per_month_tenure', 'performance_x_tenure', 'performance_x_salary_growth'
+    ]
                 all_possible_numerics.extend(engineered_features)
             except Exception:
                 pass
@@ -737,8 +737,8 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
     for feat in numerics_to_include:
         # Skip raw categorical columns that should be encoded, not used directly
         if feat not in excluded_raw_cols:
-            val = features_dict.get(feat, 0)
-            all_features[feat] = float(val) if val is not None else 0.0
+        val = features_dict.get(feat, 0)
+        all_features[feat] = float(val) if val is not None else 0.0
     
     # Encode all possible categoricals
     # Match the exact format from model signature (e.g., gender_M, gender_F, gender_NB)
@@ -813,7 +813,7 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
             elif emp_val in ['Full_time', 'Full-time', 'Full time'] and mapped_emp_type in ['Full_time', 'Full-time', 'Full time']:
                 all_features[col_name] = 1.0
             else:
-                all_features[col_name] = 1.0 if mapped_emp_type == emp_val else 0.0
+            all_features[col_name] = 1.0 if mapped_emp_type == emp_val else 0.0
         elif col_name.startswith('performance_trend_'):
             trend_val = col_name.replace('performance_trend_', '')
             # Handle trend normalization
@@ -933,12 +933,12 @@ def ensure_dataframe_schema(features_df, model):
                 if hasattr(model.metadata, 'signature'):
                     signature = model.metadata.signature
                 elif hasattr(model.metadata, 'get_signature'):
-                    signature = model.metadata.get_signature()
+            signature = model.metadata.get_signature()
                 else:
                     signature = None
                 
                 if signature and hasattr(signature, 'inputs') and signature.inputs:
-                    expected_cols = [inp.name for inp in signature.inputs.inputs]
+                expected_cols = [inp.name for inp in signature.inputs.inputs]
             except Exception:
                 pass
         
@@ -963,15 +963,15 @@ def ensure_dataframe_schema(features_df, model):
             features_df = pd.DataFrame([result_dict], columns=expected_cols)
             
             # Ensure all values are numeric (convert if needed)
-            for col in expected_cols:
+                for col in expected_cols:
                 if features_df[col].dtype == 'object':
                     # Try to convert to numeric
                     features_df[col] = pd.to_numeric(features_df[col], errors='coerce').fillna(0.0)
                 elif features_df[col].dtype not in ['int64', 'float64', 'int32', 'float32']:
                     # Convert to float for consistency
                     features_df[col] = features_df[col].astype('float64')
-            
-            return features_df
+                
+                return features_df
     except Exception as e:
         # If schema enforcement fails, try to at least remove obvious extra columns
         import warnings
@@ -1027,7 +1027,7 @@ def explain_prediction(employee_id, model_name, career_models, employees_df,
             if hasattr(model_pipeline.metadata, 'signature'):
                 signature = model_pipeline.metadata.signature
             elif hasattr(model_pipeline.metadata, 'get_signature'):
-                signature = model_pipeline.metadata.get_signature()
+            signature = model_pipeline.metadata.get_signature()
             else:
                 signature = None
             
@@ -1701,9 +1701,9 @@ def get_demo_employee_data(employees_df, displayHTML):
 
     # If not found by ID, try by name
     if not alex_data:
-        alex_data = employees_df.filter(
-            (F.col("first_name") == "Alex") & (F.col("last_name") == "Smith")
-        ).collect()
+    alex_data = employees_df.filter(
+        (F.col("first_name") == "Alex") & (F.col("last_name") == "Smith")
+    ).collect()
 
     # try to get example from our Success Factors DP
     if not alex_data:
@@ -2404,7 +2404,7 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
             # Select top performers from this department
             dept_employees = active_employees_df.filter(
                 F.coalesce(F.col('department_name'), F.expr("try_cast(department as string)")) == dept_name
-            ).orderBy(
+    ).orderBy(
                 F.desc(F.coalesce(F.col('performance_rating'), F.lit(3.0))),
                 F.desc(F.coalesce(F.col('potential_score'), F.lit(70.0)))
             ).limit(employees_per_dept).collect()
@@ -2427,9 +2427,9 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
     else:
         # Fallback: just get top 20 by performance
         all_employees = active_employees_df.orderBy(
-            F.desc(F.coalesce(F.col('performance_rating'), F.lit(3.0))),
-            F.desc(F.coalesce(F.col('potential_score'), F.lit(70.0)))
-        ).limit(20).collect()
+        F.desc(F.coalesce(F.col('performance_rating'), F.lit(3.0))),
+        F.desc(F.coalesce(F.col('potential_score'), F.lit(70.0)))
+    ).limit(20).collect()
     
     print(f"   ✅ Selected {len(all_employees)} employees for analysis")
     
@@ -2493,19 +2493,19 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
             # Group by numeric department code - use department_name if available, fallback to department code
             dept_col = F.coalesce(F.col('department_name'), F.expr("try_cast(department as string)"))
             dept_stats_df = employees_df.groupBy(dept_col.alias('department')).agg(
-                F.avg('base_salary').alias('dept_avg_salary'),
-                F.avg('performance_rating').alias('dept_avg_performance'),
-                F.avg('months_in_company').alias('dept_avg_tenure'),
-                F.stddev('base_salary').alias('dept_salary_std')
-            ).collect()
-            for row in dept_stats_df:
-                dept = row['department']
-                dept_stats_cache[dept] = {
-                    'dept_avg_salary': row['dept_avg_salary'] or 0.0,
-                    'dept_avg_performance': row['dept_avg_performance'] or 3.0,
-                    'dept_avg_tenure': row['dept_avg_tenure'] or 12.0,
-                    'dept_salary_std': row['dept_salary_std'] or 0.0
-                }
+            F.avg('base_salary').alias('dept_avg_salary'),
+            F.avg('performance_rating').alias('dept_avg_performance'),
+            F.avg('months_in_company').alias('dept_avg_tenure'),
+            F.stddev('base_salary').alias('dept_salary_std')
+        ).collect()
+        for row in dept_stats_df:
+            dept = row['department']
+            dept_stats_cache[dept] = {
+                'dept_avg_salary': row['dept_avg_salary'] or 0.0,
+                'dept_avg_performance': row['dept_avg_performance'] or 3.0,
+                'dept_avg_tenure': row['dept_avg_tenure'] or 12.0,
+                'dept_salary_std': row['dept_salary_std'] or 0.0
+            }
         print(f"   ✅ Cached statistics for {len(dept_stats_cache)} departments")
     except Exception as e:
         print(f"   ⚠️ Could not cache department stats: {str(e)[:100]}")
@@ -2567,7 +2567,7 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
                 if hasattr(reference_model.metadata, 'signature'):
                     signature = reference_model.metadata.signature
                 elif hasattr(reference_model.metadata, 'get_signature'):
-                    signature = reference_model.metadata.get_signature()
+                signature = reference_model.metadata.get_signature()
                 else:
                     signature = None
                 
@@ -2786,15 +2786,19 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
         talent_score = max(30.0, min(100.0, talent_score))
         
         # Categorize talent with distinct, non-overlapping categories
-        if potential_prob >= 0.8 and readiness_score >= 80:
-            # Highest tier: Both high potential AND ready now
+        # Priority: Readiness first, then potential, then performance
+        if readiness_score >= 80 and potential_prob >= 0.75:
+            # Highest tier: Both ready now AND high potential
             talent_category = 'Ready for Promotion'
-        elif potential_prob >= 0.75 and readiness_score >= 70:
-            # High potential with good readiness
-            talent_category = 'High Potential'
-        elif readiness_score >= 75 and potential_prob >= 0.65:
-            # Ready now but lower potential
+        elif readiness_score >= 75:
+            # Ready now - prioritize this over potential/performance
+            if potential_prob >= 0.70:
             talent_category = 'Promotion Ready'
+        else:
+                talent_category = 'Promotion Ready'  # Still ready even if lower potential
+        elif potential_prob >= 0.75:
+            # High potential but not quite ready yet
+            talent_category = 'High Potential'
         elif performance_rating >= 4.0 and engagement_score >= 80:
             # Strong performer but not yet ready/potential
             talent_category = 'Top Performer'
