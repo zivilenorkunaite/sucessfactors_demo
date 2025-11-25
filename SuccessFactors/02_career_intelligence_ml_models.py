@@ -165,9 +165,11 @@ employee_features = employees_df.select(
     'age',
     'gender',
     'department',
+    F.coalesce(F.col('department_name'), F.lit('Unknown')).alias('department_name'),  # Add department_name for display
     'job_title',
     'job_level',
     'location',
+    F.coalesce(F.col('location_name'), F.lit('Unknown')).alias('location_name'),  # Add location_name for display
     'employment_type',
     'base_salary',
     'tenure_months',
@@ -1659,7 +1661,13 @@ print("   Use 'models:/{catalog}.{schema}.{model_name}@Champion' to load them (r
 
 
 # Get a sample of employees for testing
-sample_employees = master_features.limit(10).toPandas()
+# Include department_name and location_name for display
+sample_employees_df = master_features.join(
+    employees_df.select('employee_id', 'first_name', 'last_name', 'department_name', 'location_name'),
+    'employee_id',
+    'left'
+)
+sample_employees = sample_employees_df.limit(10).toPandas()
 
 print("📊 Sample Employee Analysis:")
 print("=" * 60)
@@ -1667,11 +1675,12 @@ print("=" * 60)
 for idx, employee in sample_employees.iterrows():
     emp_id = employee['employee_id']
     name = f"{employee.get('first_name', 'John')} {employee.get('last_name', 'Doe')}"
-    dept = employee['department']
+    dept = employee.get('department_name', employee.get('department', 'Unknown'))
+    location = employee.get('location_name', employee.get('location', 'Unknown'))
     title = employee['job_title']
     
     print(f"\n👤 {emp_id}")
-    print(f"   📋 {title} in {dept}")
+    print(f"   📋 {title} in {dept} ({location})")
     print(f"   ⏱️ {employee['tenure_months']} months tenure, {employee['months_in_current_role']} months in role")
     print(f"   ⭐ Performance: {employee['latest_performance_rating']:.1f}/5.0")
     print(f"   📚 Learning: {employee['courses_completed']} courses, {employee['total_learning_hours']} hours")
