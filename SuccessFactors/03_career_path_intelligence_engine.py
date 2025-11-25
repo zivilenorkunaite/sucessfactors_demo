@@ -220,8 +220,15 @@ df_result = df_with_text.selectExpr("*", ai_query_expr).drop("employee_text", "f
 # Show all original columns + one "llm_response" column on the far right
 display(df_result)
 
-# Write to Delta table
-df_result.write.format("delta").option("mergeSchema", "true").mode("overwrite").saveAsTable(
+# Ensure department column has consistent type (integer) before writing
+# This prevents schema merge conflicts
+df_result = df_result.withColumn(
+    "department",
+    F.coalesce(F.expr("try_cast(department as int)"), F.lit(0))
+)
+
+# Write to Delta table with schema overwrite to handle any conflicts
+df_result.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(
     f"{catalog_name}.{schema_name}.calculated_talent_metrics"
 )
 

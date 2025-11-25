@@ -2832,11 +2832,20 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
             # If it's a numeric code, try to convert to string or use as-is
             dept_name = str(int(dept_name)) if dept_name else 'Unknown'
         
+        # Keep department as numeric code for schema consistency, department_name as string
+        dept_code = emp_dict.get('department')
+        if dept_code is None or dept_code == 'Unknown':
+            dept_code = 0  # Default to 0 if unknown
+        try:
+            dept_code = int(dept_code) if not isinstance(dept_code, str) or dept_code.isdigit() else 0
+        except (ValueError, TypeError):
+            dept_code = 0
+        
         talent_results.append({
             'name': full_name,
             'employee_id': emp_dict.get('employee_id', ''),
-            'department': dept_name,  # This will be department_name if available, otherwise department code
-            'department_name': emp_dict.get('department_name') or dept_name,  # Explicit department_name column
+            'department': dept_code,  # Keep as numeric for schema consistency
+            'department_name': emp_dict.get('department_name') or dept_name,  # Explicit department_name column as string
             'current_level': emp_dict.get('current_level', 'Unknown'),
             'performance_rating': performance_rating,
             'engagement_score': engagement_score,
