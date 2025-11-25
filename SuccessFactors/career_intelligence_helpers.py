@@ -2388,48 +2388,62 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
     # Get list of departments
     dept_list = [row['dept_name'] for row in dept_counts.collect()]
     
-    # Calculate how many employees to select per department (aim for ~3-4 per dept, but prioritize larger depts)
-    total_to_select = 20
+    # Select a larger initial pool (50-60 employees) to ensure we have diverse categories
+    # We'll run predictions on all, then select diverse mix for final 20
+    initial_pool_size = 60
     selected_employees = []
     
     if len(dept_list) > 0:
-        # Allocate employees per department (proportional but ensure at least 1 per dept)
-        employees_per_dept = max(1, total_to_select // len(dept_list))
-        remaining = total_to_select
+        # Allocate employees per department (proportional but ensure at least 2-3 per dept)
+        employees_per_dept = max(2, initial_pool_size // min(len(dept_list), 15))
+        remaining = initial_pool_size
         
-        for dept_name in dept_list[:10]:  # Limit to top 10 departments
+        for dept_name in dept_list[:15]:  # Limit to top 15 departments
             if remaining <= 0:
                 break
             
-            # Select top performers from this department
-            dept_employees = active_employees_df.filter(
+            # Select diverse mix from this department: mix of high performers and others
+            dept_df = active_employees_df.filter(
                 F.coalesce(F.col('department_name'), F.expr("try_cast(department as string)")) == dept_name
-    ).orderBy(
+            )
+            
+            # Get top performers (for "Ready for Promotion" candidates)
+            top_performers = dept_df.orderBy(
                 F.desc(F.coalesce(F.col('performance_rating'), F.lit(3.0))),
                 F.desc(F.coalesce(F.col('potential_score'), F.lit(70.0)))
-            ).limit(employees_per_dept).collect()
+            ).limit(employees_per_dept // 2).collect()
             
-            selected_employees.extend(dept_employees)
-            remaining -= len(dept_employees)
+            # Get diverse mix (for "Top Performer" and other categories)
+            already_selected_ids = {emp.asDict().get('employee_id') for emp in top_performers}
+            diverse_mix = dept_df.filter(
+                ~F.col('employee_id').isin(list(already_selected_ids))
+            ).orderBy(
+                F.desc(F.coalesce(F.col('engagement_score'), F.lit(70.0))),
+                F.desc(F.coalesce(F.col('performance_rating'), F.lit(3.0)))
+            ).limit(employees_per_dept - len(top_performers)).collect()
+            
+            selected_employees.extend(top_performers)
+            selected_employees.extend(diverse_mix)
+            remaining -= (len(top_performers) + len(diverse_mix))
         
-        # If we still need more, fill from remaining departments or top performers overall
+        # If we still need more, fill from remaining departments
         if remaining > 0:
             already_selected_ids = {emp.asDict().get('employee_id') for emp in selected_employees}
             additional = active_employees_df.filter(
                 ~F.col('employee_id').isin(list(already_selected_ids))
-            ).orderBy(
-                F.desc(F.coalesce(F.col('performance_rating'), F.lit(3.0))),
-                F.desc(F.coalesce(F.col('potential_score'), F.lit(70.0)))
+    ).orderBy(
+        F.desc(F.coalesce(F.col('performance_rating'), F.lit(3.0))),
+        F.desc(F.coalesce(F.col('potential_score'), F.lit(70.0)))
             ).limit(remaining).collect()
             selected_employees.extend(additional)
         
-        all_employees = selected_employees[:total_to_select]
+        all_employees = selected_employees[:initial_pool_size]
     else:
-        # Fallback: just get top 20 by performance
+        # Fallback: get diverse mix by performance and engagement
         all_employees = active_employees_df.orderBy(
-        F.desc(F.coalesce(F.col('performance_rating'), F.lit(3.0))),
-        F.desc(F.coalesce(F.col('potential_score'), F.lit(70.0)))
-    ).limit(20).collect()
+            F.desc(F.coalesce(F.col('performance_rating'), F.lit(3.0))),
+            F.desc(F.coalesce(F.col('engagement_score'), F.lit(70.0)))
+        ).limit(initial_pool_size).collect()
     
     print(f"   ✅ Selected {len(all_employees)} employees for analysis")
     
