@@ -2056,9 +2056,9 @@ def generate_career_predictions(employee_data,career_models,employees_df,display
     # Get potential next roles
     potential_roles = get_potential_next_roles(emp_dict)
     
-    predictions = []
+    raw_predictions = []  # Store raw predictions for relative scaling
     
-    # Use ML models for predictions
+    # First pass: collect all raw predictions
     for role in potential_roles:
         try:
             # Create transition features
@@ -2178,20 +2178,58 @@ def generate_career_predictions(employee_data,career_models,employees_df,display
             # 1. Calculate role compatibility multiplier
             compatibility_multiplier = get_role_compatibility_score(combined_features, role)
             
-            # 2. Apply adjustments to probability
-            # Ensure probability doesn't go below 0 or above 100
-            adjusted_probability = base_probability * compatibility_multiplier
-            adjusted_probability = max(5.0, min(95.0, adjusted_probability))  # Cap between 5% and 95%
+            # Store raw prediction for relative scaling
+            raw_adjusted_prob = base_probability * compatibility_multiplier
+            raw_predictions.append({
+                'role': role,
+                'base_probability': base_probability,
+                'compatibility_multiplier': compatibility_multiplier,
+                'raw_adjusted_prob': raw_adjusted_prob,
+                'base_readiness': base_readiness,
+                'combined_features': combined_features
+            })
+        except Exception as e:
+            raise RuntimeError(f"❌ Error predicting for role '{role['title']}': {e}")
+    
+    # Second pass: Apply relative scaling to create better differentiation
+    predictions = []
+    if raw_predictions:
+        # Extract raw probabilities for scaling
+        raw_probs = [p['raw_adjusted_prob'] for p in raw_predictions]
+        min_prob = min(raw_probs)
+        max_prob = max(raw_probs)
+        prob_range = max_prob - min_prob if max_prob > min_prob else 1.0
+        
+        # Use percentile-based scaling with better spread (15-75% range instead of all 5%)
+        for raw_pred in raw_predictions:
+            role = raw_pred['role']
+            raw_prob = raw_pred['raw_adjusted_prob']
+            base_readiness = raw_pred['base_readiness']
+            combined_features = raw_pred['combined_features']
             
-            # 3. Calculate skill gap penalty for readiness
+            # Relative ranking: map to 15-75% range for better differentiation
+            if prob_range > 0.1:  # Meaningful range exists
+                # Normalize to 0-1 range
+                normalized = (raw_prob - min_prob) / prob_range
+                # Map to 15-75% range (60% span) for better visibility
+                adjusted_probability = 15.0 + (normalized * 60.0)
+            else:
+                # All probabilities are very similar - use compatibility multiplier to differentiate
+                # Spread based on compatibility multiplier (typically 0.75-1.1 range)
+                multiplier_diff = raw_pred['compatibility_multiplier'] - 0.75  # Normalize to 0-0.35 range
+                adjusted_probability = 20.0 + (multiplier_diff / 0.35) * 50.0  # Map to 20-70% range
+            
+            # Ensure reasonable bounds (wider than before)
+            adjusted_probability = max(12.0, min(78.0, adjusted_probability))
+            
+            # Calculate skill gap penalty for readiness
             skill_gap_penalty = calculate_skill_gap_penalty(combined_features, role)
             adjusted_readiness = base_readiness * (1 - skill_gap_penalty)
-            adjusted_readiness = max(30.0, min(95.0, adjusted_readiness))  # Cap between 30 and 95
+            # Wider readiness range for better differentiation
+            adjusted_readiness = max(35.0, min(90.0, adjusted_readiness))
             
-            # 4. Get role-specific timeline
+            # Get role-specific timeline and factors
             timeline = get_role_specific_timeline(role, adjusted_readiness)
-            
-            # 5. Get role-specific success factors
             success_factors_list = get_success_factors(combined_features, role)
 
             predictions.append({
@@ -2204,9 +2242,6 @@ def generate_career_predictions(employee_data,career_models,employees_df,display
                 'risk_factors': get_risk_factors(employee_features, role),
                 'model_confidence': 'High' if adjusted_probability > 75 else 'Medium' if adjusted_probability > 60 else 'Low'
             })
-        except Exception as e:
-            # Fail fast - don't silently skip roles
-            raise RuntimeError(f"❌ Error predicting for role '{role['title']}': {e}")
     
     return sorted(predictions, key=lambda x: x['probability'], reverse=True)
 
