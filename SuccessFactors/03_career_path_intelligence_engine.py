@@ -25,7 +25,7 @@
 # COMMAND ----------
 
 # Install all required libraries for serverless compute
-%pip install plotly>=5.18.0 mlflow>=2.8.0 lightgbm
+%pip install plotly>=5.18.0 mlflow>=2.8.0 
 
 # COMMAND ----------
 
@@ -82,10 +82,6 @@ if not career_models:
 # COMMAND ----------
 
 demo_employee_data, demo_employee_id = get_demo_employee_data(employees_df, displayHTML)
-
-# COMMAND ----------
-
-
 
 # COMMAND ----------
 
@@ -162,7 +158,7 @@ execute_career_ai_query(LLM_MODEL, prompt, example_question, demo_employee_conte
 
 # COMMAND ----------
 
-get_demo_employee_career_predictions(demo_employee_data, career_models, employees_df, displayHTML, spark, catalog_name, schema_name)
+get_demo_employees_career_predictions(demo_employee_data, career_models, employees_df, displayHTML, spark, catalog_name, schema_name)
 
 # COMMAND ----------
 

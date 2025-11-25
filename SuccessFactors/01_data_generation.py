@@ -2364,8 +2364,6 @@ data_sources['compensation'] = 'GENERATED'
 
 # COMMAND ----------
 
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC ### Save Employees Table
 
