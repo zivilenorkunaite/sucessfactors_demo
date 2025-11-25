@@ -274,9 +274,11 @@ def generate_employees():
         'hire_date': alex_hire_date,
         'current_job_start_date': alex_job_start,
         'department': 1034, #'Engineering',
+        'department_name': DEPARTMENT_CODE_TO_NAME.get(1034, 'Unknown'),
         'job_title': 'Software Engineer',
         'job_level': 1,
-        'location': 'Sydney',
+        'location': 53,  # Australia location code
+        'location_name': 'Australia',
         'employment_status': 'Active',
         'employment_type': 'Full-time',
         'base_salary': 110000,  # AUD - Sydney Software Engineer rate
@@ -338,7 +340,10 @@ def generate_employees():
             base_salary = random.randint(min_salary, max_salary)
             
             # Location affects salary (Australian market rates)
-            location = random.choice(locations)
+            # Use location code 53 (Australia) for all generated employees
+            location_city = random.choice(locations)
+            location_code = 53  # Australia location code
+            location_name = 'Australia'
             location_multipliers = {
                 'Sydney': 1.15,      # Highest cost of living, highest salaries
                 'Melbourne': 1.05,   # Second major market
@@ -346,7 +351,7 @@ def generate_employees():
                 'Perth': 0.92,       # Mining/resources focus
                 'Adelaide': 0.88     # Smaller market
             }
-            base_salary = int(base_salary * location_multipliers.get(location, 1.0))
+            base_salary = int(base_salary * location_multipliers.get(location_city, 1.0))
             
             employees.append({
                 'employee_id': str(employee_id),
@@ -358,9 +363,11 @@ def generate_employees():
                 'hire_date': hire_date,
                 'current_job_start_date': current_job_start,
                 'department': dept,
+                'department_name': DEPARTMENT_CODE_TO_NAME.get(int(dept) if dept is not None else None, 'Unknown'),
                 'job_title': job_levels[current_level_idx],
                 'job_level': int(current_level_idx),
-                'location': location,
+                'location': location_code,
+                'location_name': location_name,
                 'employment_status': random.choices(EMPLOYMENT_STATUS_OPTIONS, weights=[92, 8])[0],
                 'employment_type': random.choices(EMPLOYMENT_TYPES, weights=[85, 10, 5])[0],
                 'base_salary': int(base_salary),
@@ -845,9 +852,11 @@ def generate_alex_employee_record():
         'hire_date': alex_hire_date,
         'current_job_start_date': alex_job_start,
         'department': 1034, #'Engineering',
+        'department_name': DEPARTMENT_CODE_TO_NAME.get(1034, 'Unknown'),
         'job_title': 'Software Engineer',
         'job_level': 1,
-        'location':  43, #'Sydney',
+        'location': 43,  # UK location code (for demo purposes)
+        'location_name': LOCATION_CODE_TO_NAME.get(43, 'Australia'),
         'employment_status': 'Active',
         'employment_type': 'Full-time',
         'base_salary': 110000,  # AUD - Sydney Software Engineer rate
@@ -888,9 +897,11 @@ def ensure_alex_in_employees_df(employees_df):
         'age': int(alex_record['age']),
         'gender': str(alex_record['gender']),
         'department': str(alex_record['department']),
+        'department_name': str(alex_record.get('department_name', DEPARTMENT_CODE_TO_NAME.get(int(alex_record['department']) if alex_record['department'] is not None else None, 'Unknown'))),
         'job_title': str(alex_record['job_title']),
         'job_level': int(alex_record['job_level']),
         'location': str(alex_record['location']),
+        'location_name': str(alex_record.get('location_name', LOCATION_CODE_TO_NAME.get(int(alex_record['location']) if alex_record['location'] is not None else None, 'Australia'))),
         'employment_type': str(alex_record['employment_type']),
         'base_salary': int(alex_record['base_salary']),
         'tenure_months': int(alex_record['tenure_months']),
@@ -909,19 +920,54 @@ def ensure_alex_in_employees_df(employees_df):
         F.col("age").cast("integer").alias("age"),
         F.col("gender").alias("gender"),
         F.col("department").alias("department"),
+        F.col("department_name").alias("department_name"),
         F.col("job_title").alias("job_title"),
         F.col("job_level").cast("integer").alias("job_level"),
         F.col("location").alias("location"),
+        F.col("location_name").alias("location_name"),
         F.col("employment_type").alias("employment_type"),
         F.col("base_salary").cast("integer").alias("base_salary"),
         F.col("tenure_months").cast("integer").alias("tenure_months"),
         F.col("months_in_current_role").cast("integer").alias("months_in_current_role"),
         F.col("employment_status").alias("employment_status"),
         F.col("first_name").alias("first_name"),
-        F.col("last_name").alias("last_name"),
-        F.col("hire_date").cast("date").alias("hire_date"),
-        F.col("current_job_start_date").cast("date").alias("current_job_start_date")
-    )
+            F.col("last_name").alias("last_name"),
+            F.col("hire_date").cast("date").alias("hire_date"),
+            F.col("current_job_start_date").cast("date").alias("current_job_start_date")
+        )
+        
+        # Add department_name column based on department code mapping
+        # Handle both numeric codes and string codes (including 'null')
+        dept_mapping_expr = F.lit("Unknown")
+        for dept_code, dept_name in DEPARTMENT_CODE_TO_NAME.items():
+            if dept_code is None or dept_code == 'null' or dept_code == '':
+                # Handle null/empty values
+                dept_mapping_expr = F.when(
+                    (F.col("department").isNull()) | (F.col("department") == 'null') | (F.col("department") == ''),
+                    F.lit(dept_name)
+                ).otherwise(dept_mapping_expr)
+            else:
+                # Handle numeric codes - compare as both int and string to handle type variations
+                dept_mapping_expr = F.when(
+                    (F.col("department") == dept_code) | (F.col("department").cast("string") == str(dept_code)),
+                    F.lit(dept_name)
+                ).otherwise(dept_mapping_expr)
+        employees_df = employees_df.withColumn("department_name", dept_mapping_expr)
+        
+        # Add location_name column based on location code mapping
+        loc_mapping_expr = F.lit("Australia")  # Default to Australia
+        for loc_code, loc_name in LOCATION_CODE_TO_NAME.items():
+            if loc_code is None or loc_code == 'null' or loc_code == '':
+                loc_mapping_expr = F.when(
+                    (F.col("location").isNull()) | (F.col("location") == 'null') | (F.col("location") == ''),
+                    F.lit(loc_name)
+                ).otherwise(loc_mapping_expr)
+            else:
+                loc_mapping_expr = F.when(
+                    (F.col("location") == loc_code) | (F.col("location").cast("string") == str(loc_code)),
+                    F.lit(loc_name)
+                ).otherwise(loc_mapping_expr)
+        employees_df = employees_df.withColumn("location_name", loc_mapping_expr)
     
     # Union Alex's record with the rest
     employees_df = employees_df.unionByName(alex_df)
@@ -1256,7 +1302,7 @@ def load_employees_from_data_product(generated_employees=None):
         if has_location:
             select_exprs.append(F.col("location").alias("location"))
         else:
-            select_exprs.append(F.lit("Unknown").alias("location"))
+            select_exprs.append(F.lit(0).alias("location"))  # Default to 0 (Australia) if missing
         
         # Employment Type - only cast if column exists
         if has_employmentType:
@@ -1390,6 +1436,41 @@ def load_employees_from_data_product(generated_employees=None):
             get_last_name_udf(F.col("employee_id"))
         )
         
+        # Add department_name column based on department code mapping
+        # Create a mapping expression using when/otherwise
+        # Handle both numeric codes and string codes (including 'null')
+        dept_mapping_expr = F.lit("Unknown")
+        for dept_code, dept_name in DEPARTMENT_CODE_TO_NAME.items():
+            if dept_code is None or dept_code == 'null' or dept_code == '':
+                # Handle null/empty values
+                dept_mapping_expr = F.when(
+                    (F.col("department").isNull()) | (F.col("department") == 'null') | (F.col("department") == ''),
+                    F.lit(dept_name)
+                ).otherwise(dept_mapping_expr)
+            else:
+                # Handle numeric codes - compare as both int and string to handle type variations
+                dept_mapping_expr = F.when(
+                    (F.col("department") == dept_code) | (F.col("department").cast("string") == str(dept_code)),
+                    F.lit(dept_name)
+                ).otherwise(dept_mapping_expr)
+        
+        employees_df = employees_df.withColumn("department_name", dept_mapping_expr)
+        
+        # Add location_name column based on location code mapping
+        loc_mapping_expr = F.lit("Australia")  # Default to Australia
+        for loc_code, loc_name in LOCATION_CODE_TO_NAME.items():
+            if loc_code is None or loc_code == 'null' or loc_code == '':
+                loc_mapping_expr = F.when(
+                    (F.col("location").isNull()) | (F.col("location") == 'null') | (F.col("location") == ''),
+                    F.lit(loc_name)
+                ).otherwise(loc_mapping_expr)
+            else:
+                loc_mapping_expr = F.when(
+                    (F.col("location") == loc_code) | (F.col("location").cast("string") == str(loc_code)),
+                    F.lit(loc_name)
+                ).otherwise(loc_mapping_expr)
+        employees_df = employees_df.withColumn("location_name", loc_mapping_expr)
+        
         # Add computed date columns needed for goals and compensation generation
         # This eliminates the need for _prepare_employees_df_for_generation()
         employees_df = employees_df.withColumn(
@@ -1439,6 +1520,39 @@ def load_employees_from_data_product(generated_employees=None):
             F.col("first_name").alias("first_name"),
             F.col("last_name").alias("last_name")
         )
+        
+        # Add department_name column based on department code mapping
+        # Handle both numeric codes and string codes (including 'null')
+        dept_mapping_expr = F.lit("Unknown")
+        for dept_code, dept_name in DEPARTMENT_CODE_TO_NAME.items():
+            if dept_code is None or dept_code == 'null' or dept_code == '':
+                # Handle null/empty values
+                dept_mapping_expr = F.when(
+                    (F.col("department").isNull()) | (F.col("department") == 'null') | (F.col("department") == ''),
+                    F.lit(dept_name)
+                ).otherwise(dept_mapping_expr)
+            else:
+                # Handle numeric codes - compare as both int and string to handle type variations
+                dept_mapping_expr = F.when(
+                    (F.col("department") == dept_code) | (F.col("department").cast("string") == str(dept_code)),
+                    F.lit(dept_name)
+                ).otherwise(dept_mapping_expr)
+        employees_df = employees_df.withColumn("department_name", dept_mapping_expr)
+        
+        # Add location_name column based on location code mapping
+        loc_mapping_expr = F.lit("Australia")  # Default to Australia
+        for loc_code, loc_name in LOCATION_CODE_TO_NAME.items():
+            if loc_code is None or loc_code == 'null' or loc_code == '':
+                loc_mapping_expr = F.when(
+                    (F.col("location").isNull()) | (F.col("location") == 'null') | (F.col("location") == ''),
+                    F.lit(loc_name)
+                ).otherwise(loc_mapping_expr)
+            else:
+                loc_mapping_expr = F.when(
+                    (F.col("location") == loc_code) | (F.col("location").cast("string") == str(loc_code)),
+                    F.lit(loc_name)
+                ).otherwise(loc_mapping_expr)
+        employees_df = employees_df.withColumn("location_name", loc_mapping_expr)
         
         # Add computed date columns needed for goals and compensation generation
         # This eliminates the need for _prepare_employees_df_for_generation()
