@@ -1611,6 +1611,52 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
         print(f"✅ Successfully loaded {record_count:,} learning records from DATA PRODUCT")
         print(f"   📦 Data Source: SAP SuccessFactors Data Product (Delta Sharing)")
         
+        # Generate learningItemName from componentID if learningItemName is missing or null
+        # Map componentID values to appropriate course names based on category patterns
+        has_component_id = "componentID" in learning_df_raw.columns or "componentId" in learning_df_raw.columns
+        component_id_col = "componentID" if "componentID" in learning_df_raw.columns else ("componentId" if "componentId" in learning_df_raw.columns else None)
+        
+        # Check if completionStatus column exists (may have different casing)
+        has_completion_status = "completionStatus" in learning_df_raw.columns or "completion_status" in learning_df_raw.columns
+        completion_status_col = "completionStatus" if "completionStatus" in learning_df_raw.columns else ("completion_status" if "completion_status" in learning_df_raw.columns else None)
+        
+        if has_component_id and component_id_col:
+            # Generate learningItemName based on componentID
+            # Map specific componentID values to course names that align with category patterns
+            learning_df_raw = learning_df_raw.withColumn(
+                "learningItemName",
+                F.when(
+                    (F.col("learningItemName").isNull()) | (F.trim(F.col("learningItemName")) == ""),
+                    # Map specific componentID values to course names
+                    F.when(F.lower(F.col(component_id_col)) == "hr-601", "HR Policies and Procedures Training")
+                     .when(F.lower(F.col(component_id_col)) == "harvardmm_3001", "Harvard Business Management Course")
+                     .when(F.lower(F.col(component_id_col)).rlike("hr_302|hr_302_a"), "HR Compliance and Regulations")
+                     .when(F.lower(F.col(component_id_col)) == "hr_0001", "HR Fundamentals")
+                     .when(F.lower(F.col(component_id_col)) == "hr_300", "HR Advanced Practices")
+                     .when(F.lower(F.col(component_id_col)) == "hr_301", "HR Management Skills")
+                     .when(F.lower(F.col(component_id_col)) == "hr-344", "HR Policy Update")
+                     .when(F.lower(F.col(component_id_col)).rlike("hr.*sop|hr-sop-disc|sa_hr_sop"), "HR Standard Operating Procedures")
+                     .when(F.lower(F.col(component_id_col)).rlike("lead-dt01|lead-dt02"), "Leadership Development Program")
+                     .when(F.lower(F.col(component_id_col)) == "glen_logbook1", "Professional Development Logbook")
+                     .when(F.lower(F.col(component_id_col)) == "pm001", "Project Management Fundamentals")
+                     .when(F.lower(F.col(component_id_col)) == "tech-dt01", "Technical Skills Development")
+                     .when(F.lower(F.col(component_id_col)) == "t-454", "Technical Training Course T-454")
+                     .when(F.lower(F.col(component_id_col)).rlike("sf_learning|sf_overview|mobile_sf_overview"), "SuccessFactors Platform Overview")
+                     .when(F.lower(F.col(component_id_col)) == "coursera_2021", "Coursera Professional Development")
+                     .when(F.lower(F.col(component_id_col)).rlike("han_safety|safety|confined_space|sunfun_confined_space"), "Safety and Compliance Training")
+                     .when(F.lower(F.col(component_id_col)).rlike("flift|license"), "Forklift License Certification")
+                     .when(F.lower(F.col(component_id_col)) == "rm", "Risk Management Fundamentals")
+                     .when(F.lower(F.col(component_id_col)) == "rs-2", "Risk Management Advanced")
+                     .when(F.lower(F.col(component_id_col)) == "vpol_ethics", "Ethics and Compliance Policy")
+                     .when(F.lower(F.col(component_id_col)) == "opensesame_4005", "OpenSesame Learning Course")
+                     .when(F.lower(F.col(component_id_col)).rlike("black_resp|black_respsourcing"), "Responsible Sourcing Training")
+                     .when(F.lower(F.col(component_id_col)).rlike("sales.*ilt|sales_5000470028"), "Sales Training Program")
+                     .when(F.lower(F.col(component_id_col)).rlike("mobile"), "Mobile Learning Module")
+                     # For any other componentID, generate a generic course name
+                     .otherwise(F.concat(F.lit("Learning Course - "), F.col(component_id_col)))
+                ).otherwise(F.col("learningItemName"))
+            )
+        
         # Map columns to expected names
         # Use try_cast to handle malformed values
         # Map completion status IDs to strings: "1"->Completed, "2"->In Progress, "3"->Not Started
@@ -1631,10 +1677,26 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
             F.coalesce(F.expr("try_cast(completionDate as date)"), F.expr("try_cast(completedDate as date)"), F.current_date()).alias("completion_date"),
             F.coalesce(F.expr("try_cast(hoursCompleted as int)"), F.expr("try_cast(totalHours as int)"), F.lit(0)).alias("hours_completed"),
             # Map completion status ID to string
-            F.when(F.col("completionStatusId") == COMPLETION_STATUS_ID_COMPLETED, COMPLETION_STATUS_COMPLETED)
+            # Also handle various completion status codes from data product
+            # Priority: 1) completionStatusId mapping, 2) completionStatus if it's a recognized code, 3) default
+            completion_status_expr = F.when(F.col("completionStatusId") == COMPLETION_STATUS_ID_COMPLETED, COMPLETION_STATUS_COMPLETED)
              .when(F.col("completionStatusId") == COMPLETION_STATUS_ID_IN_PROGRESS, COMPLETION_STATUS_IN_PROGRESS)
              .when(F.col("completionStatusId") == COMPLETION_STATUS_ID_NOT_STARTED, COMPLETION_STATUS_NOT_STARTED)
-             .otherwise(F.coalesce(F.col("completionStatus"), F.lit(COMPLETION_STATUS_NOT_STARTED))).alias("completion_status"),
+            
+            # If completionStatus column exists, check for recognized codes
+            if has_completion_status and completion_status_col:
+                completion_status_expr = completion_status_expr.when(
+                    F.upper(F.trim(F.col(completion_status_col))).isin([
+                        "COURSE-COMPL", "CERT-RECERT", "BRIEF-COMPL", "ONLINE-COMPL", 
+                        "MOOC-CMPL", "COURSE-ATND", "DOC-READ", "TASK-C", 
+                        "CERT-REINST", "CERT-COMPL", "COMPLETED", "IN PROGRESS", "NOT STARTED"
+                    ]), F.upper(F.trim(F.col(completion_status_col)))
+                ).when(
+                    F.col(completion_status_col).isNotNull() & (F.trim(F.col(completion_status_col)) != ""), 
+                    F.col(completion_status_col)
+                )
+            
+            completion_status_expr,
             F.coalesce(F.expr("try_cast(score as int)"), F.expr("try_cast(finalScore as int)")).alias("score")
         ).filter(F.col("userId").isNotNull())
         
