@@ -83,7 +83,7 @@ EMPLOYMENT_TYPE_CODE_MAPPING = {
 DEFAULT_EMPLOYMENT_TYPE = 'Other'
 
 # Employee IDs
-ALEX_EMPLOYEE_ID = 'EMP100038'
+ALEX_EMPLOYEE_ID = '100038'
 
 # Job Level Thresholds
 MIN_MANAGER_LEVEL = 2
@@ -258,7 +258,7 @@ def generate_employees():
     alex_job_start = alex_hire_date + timedelta(days=30)
     
     employees.append({
-        'employee_id': f'EMP{alex_id}',
+        'employee_id': str(alex_id),
         'person_id': f'PER{alex_id + 50000}',
         'first_name': 'Alex',
         'last_name': 'Smith',
@@ -342,7 +342,7 @@ def generate_employees():
             base_salary = int(base_salary * location_multipliers.get(location, 1.0))
             
             employees.append({
-                'employee_id': f'EMP{employee_id}',
+                'employee_id': str(employee_id),
                 'person_id': f'PER{employee_id + 50000}',
                 'first_name': random.choice(['Alex', 'Sarah', 'Michael', 'Jessica', 'David', 'Emily', 'Chris', 'Amanda', 'Ryan', 'Lisa', 'John', 'Maria', 'James', 'Jennifer', 'Robert', 'Emma', 'Olivia', 'Charlotte', 'Sophia', 'Isabella', 'Noah', 'Oliver', 'William', 'Lucas', 'Benjamin', 'Mia', 'Harper', 'Evelyn', 'Abigail', 'Elijah', 'Mason', 'Alexander', 'Daniel', 'Matthew', 'Aiden']),
                 'last_name': random.choice(['Smith', 'Jones', 'Williams', 'Brown', 'Wilson', 'Taylor', 'Anderson', 'Thomas', 'Jackson', 'White', 'Harris', 'Martin', 'Thompson', 'Garcia', 'Martinez', 'Robinson', 'Clark', 'Rodriguez', 'Lewis', 'Lee', 'Walker', 'Hall', 'Allen', 'Young', 'King', 'Wright', 'Lopez', 'Hill', 'Scott', 'Green', 'Adams', 'Baker', 'Nelson', 'Carter', 'Mitchell', 'Roberts', 'Turner', 'Phillips', 'Campbell', 'Parker', 'Evans', 'Edwards', 'Collins', 'Stewart', 'Sanchez', 'Morris', 'Rogers', 'Reed', 'Cook', 'Morgan', 'Bell', 'Murphy', 'Bailey', 'Rivera', 'Cooper', 'Richardson', 'Cox', 'Howard', 'Ward', 'Torres', 'Peterson', 'Gray', 'Ramirez', 'James', 'Watson', 'Brooks', 'Kelly', 'Sanders', 'Price', 'Bennett', 'Wood', 'Barnes', 'Ross', 'Henderson', 'Coleman', 'Jenkins', 'Perry', 'Powell', 'Long', 'Patterson', 'Hughes', 'Flores', 'Washington', 'Butler', 'Simmons', 'Foster', 'Gonzales', 'Bryant', 'Alexander', 'Russell', 'Griffin', 'Diaz', 'Hayes']),
@@ -432,7 +432,7 @@ def generate_performance_reviews(employees):
     print(f"   ℹ️ Found {active_count:,} active employees")
     
     # Special handling for Alex Smith - make her a high performer
-    employee_performance_potential['EMP100038'] = 4.2
+    employee_performance_potential[ALEX_EMPLOYEE_ID] = 4.2
     
     eligible_count = 0
     for emp in employees:
@@ -826,6 +826,85 @@ def generate_compensation(employees, performance_reviews):
 # HELPER FUNCTIONS FOR ENSURING COMPLETE DATA
 # ============================================================================
 
+def generate_alex_employee_record():
+    """
+    Generate Alex Smith's employee record with specific characteristics for demo.
+    Returns a dictionary with Alex's employee data.
+    """
+    alex_id = 100038
+    alex_hire_date = date.today() - timedelta(days=540)  # 18 months ago
+    alex_job_start = alex_hire_date + timedelta(days=30)
+    
+    return {
+        'employee_id': str(alex_id),
+        'person_id': f'PER{alex_id + 50000}',
+        'first_name': 'Alex',
+        'last_name': 'Smith',
+        'gender': 'Female',
+        'age': 32,
+        'hire_date': alex_hire_date,
+        'current_job_start_date': alex_job_start,
+        'department': 'Engineering',
+        'job_title': 'Software Engineer',
+        'job_level': 1,
+        'location': 'Sydney',
+        'employment_status': 'Active',
+        'employment_type': 'Full-time',
+        'base_salary': 110000,  # AUD - Sydney Software Engineer rate
+        'tenure_months': 18,
+        'months_in_current_role': 17,
+        'manager_id': None
+    }
+
+
+def ensure_alex_in_employees_df(employees_df):
+    """
+    Ensure Alex Smith's generated record is always in the employees DataFrame.
+    If Alex exists, replace with generated version. If not, add it.
+    
+    Args:
+        employees_df: DataFrame with employees data
+        
+    Returns:
+        DataFrame with Alex's record guaranteed to be present
+    """
+    alex_record = generate_alex_employee_record()
+    
+    # Check if Alex exists in the DataFrame
+    alex_exists = employees_df.filter(F.col("employee_id") == ALEX_EMPLOYEE_ID).count() > 0
+    
+    if alex_exists:
+        # Remove existing Alex record and add generated one
+        print(f"   🔄 Replacing existing Alex record with generated demo data...")
+        employees_df = employees_df.filter(F.col("employee_id") != ALEX_EMPLOYEE_ID)
+    else:
+        print(f"   ➕ Adding Alex Smith demo record (employee_id: {ALEX_EMPLOYEE_ID})...")
+    
+    # Create Alex's DataFrame
+    alex_df = spark.createDataFrame([alex_record]).select(
+        F.col("employee_id").alias("employee_id"),
+        F.col("person_id").alias("person_id"),
+        F.col("age").cast("integer").alias("age"),
+        F.col("gender").alias("gender"),
+        F.col("department").alias("department"),
+        F.col("job_title").alias("job_title"),
+        F.col("job_level").cast("integer").alias("job_level"),
+        F.col("location").alias("location"),
+        F.col("employment_type").alias("employment_type"),
+        F.col("base_salary").cast("integer").alias("base_salary"),
+        F.col("tenure_months").cast("integer").alias("tenure_months"),
+        F.col("months_in_current_role").cast("integer").alias("months_in_current_role"),
+        F.col("employment_status").alias("employment_status"),
+        F.col("first_name").alias("first_name"),
+        F.col("last_name").alias("last_name")
+    )
+    
+    # Union Alex's record with the rest
+    employees_df = employees_df.unionByName(alex_df)
+    print(f"   ✅ Alex Smith demo record included")
+    
+    return employees_df
+
 def ensure_all_employees_have_performance_records(performance_df, employees_df, employees_list=None):
     """
     Ensure every employee has at least one performance record.
@@ -855,35 +934,36 @@ def ensure_all_employees_have_performance_records(performance_df, employees_df, 
         # Collect missing employee IDs
         missing_employee_ids = [row['employee_id'] for row in missing_employees_df.toLocalIterator()]
         
-        # Get full employee data for missing employees
-        if employees_list is None:
-            employees_list = _collect_employees_list_if_needed(employees_df)
+        # Get employee data directly from DataFrame for missing employees
+        missing_employees_df_full = employees_df.filter(F.col("employee_id").isin(missing_employee_ids))
         
-        # Filter to only missing employees
-        missing_employees_list = [emp for emp in employees_list if emp['employee_id'] in missing_employee_ids]
-        
-        if missing_employees_list:
-            # Generate at least one performance review for each missing employee
-            generated_reviews = []
-            for emp in missing_employees_list:
-                # Generate a single review for missing employees
-                review_date = emp.get('hire_date', date.today() - timedelta(days=365))
-                if review_date > date.today():
-                    review_date = date.today() - timedelta(days=365)
-                
-                # Use default rating for missing employees
-                generated_reviews.append({
-                    'review_id': f'REV{random.randint(10000, 99999)}',
-                    'employee_id': emp['employee_id'],
-                    'review_period': int(review_date.year),
-                    'review_date': review_date,
-                    'overall_rating': float(DEFAULT_RATING),
-                    'goals_achievement': int(DEFAULT_GOALS_ACHIEVEMENT),
-                    'competency_rating': float(DEFAULT_RATING),
-                    'reviewer_id': emp.get('manager_id', f'EMP{random.randint(100001, 199999)}'),
-                    'status': COMPLETION_STATUS_COMPLETED
-                })
+        # Generate at least one performance review for each missing employee
+        generated_reviews = []
+        for row in missing_employees_df_full.toLocalIterator():
+            # Calculate hire_date from tenure_months if not available
+            tenure_months = row.get('tenure_months', 0) or 0
+            if isinstance(tenure_months, (int, float)) and tenure_months > 0:
+                review_date = date.today() - timedelta(days=int(tenure_months * 30))
+            else:
+                review_date = date.today() - timedelta(days=365)
             
+            if review_date > date.today():
+                review_date = date.today() - timedelta(days=365)
+            
+            # Use default rating for missing employees
+            generated_reviews.append({
+                'review_id': f'REV{random.randint(10000, 99999)}',
+                'employee_id': row['employee_id'],
+                'review_period': int(review_date.year),
+                'review_date': review_date,
+                'overall_rating': float(DEFAULT_RATING),
+                'goals_achievement': int(DEFAULT_GOALS_ACHIEVEMENT),
+                'competency_rating': float(DEFAULT_RATING),
+                'reviewer_id': f'EMP{random.randint(100001, 199999)}',
+                'status': COMPLETION_STATUS_COMPLETED
+            })
+            
+        if generated_reviews:
             # Convert to DataFrame and union with existing
             missing_reviews_df = spark.createDataFrame(generated_reviews).select(
                 F.col("employee_id").alias("employee_id"),
@@ -933,32 +1013,34 @@ def ensure_all_employees_have_learning_records(learning_df, employees_df, employ
         # Collect missing employee IDs
         missing_employee_ids = [row['employee_id'] for row in missing_employees_df.toLocalIterator()]
         
-        # Get full employee data for missing employees
-        if employees_list is None:
-            employees_list = _collect_employees_list_if_needed(employees_df)
+        # Get employee data directly from DataFrame for missing employees
+        missing_employees_df_full = employees_df.filter(F.col("employee_id").isin(missing_employee_ids))
         
-        # Filter to only missing employees
-        missing_employees_list = [emp for emp in employees_list if emp['employee_id'] in missing_employee_ids]
-        
-        if missing_employees_list:
-            # Generate at least one learning record for each missing employee
-            generated_learning = []
-            for emp in missing_employees_list:
-                completion_date = emp.get('hire_date', date.today() - timedelta(days=180))
-                if completion_date > date.today():
-                    completion_date = date.today() - timedelta(days=180)
-                
-                generated_learning.append({
-                    'learning_id': f'LRN{random.randint(10000, 99999)}',
-                    'employee_id': emp['employee_id'],
-                    'course_title': 'Onboarding Training',
-                    'category': 'Technical Skills',
-                    'completion_date': completion_date,
-                    'hours_completed': int(random.randint(2, 8)),
-                    'completion_status': COMPLETION_STATUS_COMPLETED,
-                    'score': int(random.randint(70, 90))
-                })
+        # Generate at least one learning record for each missing employee
+        generated_learning = []
+        for row in missing_employees_df_full.toLocalIterator():
+            # Calculate completion_date from tenure_months if not available
+            tenure_months = row.get('tenure_months', 0) or 0
+            if isinstance(tenure_months, (int, float)) and tenure_months > 0:
+                completion_date = date.today() - timedelta(days=int(min(tenure_months * 30, 180)))
+            else:
+                completion_date = date.today() - timedelta(days=180)
             
+            if completion_date > date.today():
+                completion_date = date.today() - timedelta(days=180)
+            
+            generated_learning.append({
+                'learning_id': f'LRN{random.randint(10000, 99999)}',
+                'employee_id': row['employee_id'],
+                'course_title': 'Onboarding Training',
+                'category': 'Technical Skills',
+                'completion_date': completion_date,
+                'hours_completed': int(random.randint(2, 8)),
+                'completion_status': COMPLETION_STATUS_COMPLETED,
+                'score': int(random.randint(70, 90))
+            })
+            
+        if generated_learning:
             # Convert to DataFrame and union with existing
             missing_learning_df = spark.createDataFrame(generated_learning).select(
                 F.col("learning_id").cast("string").alias("learning_id"),
@@ -995,6 +1077,7 @@ def load_employees_from_data_product(generated_employees=None):
     print("📊 Loading employees from SAP SuccessFactors Data Product...")
     print("   Source: core_workforce_data_dp.coreworkforcedata.coreworkforce_standardfields")
     try:
+        # exclude demo ID just in case it exists already
         employees_df_raw = spark.sql(
             "SELECT * FROM core_workforce_data_dp.coreworkforcedata.coreworkforce_standardfields"
         )
@@ -1172,7 +1255,14 @@ def load_employees_from_data_product(generated_employees=None):
         
         final_count = employees_df.count()
         print(f"✅ Transformed employees data: {final_count:,} records")
-        print(f"   📊 Final Status: Using DATA PRODUCT data")
+        
+        # Always ensure Alex's generated demo record is included
+        employees_df = ensure_alex_in_employees_df(employees_df)
+        final_count_after_alex = employees_df.count()
+        if final_count_after_alex != final_count:
+            print(f"   ✅ Updated Alex record: {final_count_after_alex:,} total records")
+        
+        print(f"   📊 Final Status: Using DATA PRODUCT data (with Alex demo record)")
         return employees_df, 'DATA PRODUCT'  # Return source indicator
         
     except Exception as e:
@@ -1206,8 +1296,15 @@ def load_employees_from_data_product(generated_employees=None):
         )
         
         final_count = employees_df.count()
-        print(f"✅ Using generated employees data: {final_count:,} records")
-        print(f"   📊 Final Status: Using GENERATED data (fallback)")
+        
+        # Always ensure Alex's generated demo record is included
+        employees_df = ensure_alex_in_employees_df(employees_df)
+        final_count_after_alex = employees_df.count()
+        if final_count_after_alex != final_count:
+            print(f"   ✅ Updated Alex record: {final_count_after_alex:,} total records")
+        
+        print(f"✅ Using generated employees data: {employees_df.count():,} records")
+        print(f"   📊 Final Status: Using GENERATED data (fallback, with Alex demo record)")
         return employees_df, 'GENERATED'  # Return source indicator
 
 
