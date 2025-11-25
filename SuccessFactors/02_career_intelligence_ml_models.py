@@ -27,7 +27,7 @@
 # COMMAND ----------
 
 # Install required libraries for serverless compute
-%pip install mlflow>=2.8.0 shap
+%pip install mlflow>=2.8.0 shap imbalanced-learn optuna
 
 # COMMAND ----------
 
@@ -52,7 +52,7 @@ from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier,
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline as SKPipeline
-from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold, KFold, cross_val_score
+from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold, KFold, cross_val_score, TimeSeriesSplit
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, mean_squared_error, r2_score,
     precision_score, recall_score, f1_score, classification_report,
@@ -60,7 +60,16 @@ from sklearn.metrics import (
 )
 from sklearn.feature_selection import RFE, VarianceThreshold
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import VotingClassifier
+from sklearn.ensemble import VotingClassifier, StackingClassifier, StackingRegressor
+try:
+    from imblearn.over_sampling import SMOTE, BorderlineSMOTE
+    from imblearn.combine import SMOTEENN
+    IMBLEARN_AVAILABLE = True
+except ImportError:
+    IMBLEARN_AVAILABLE = False
+    print("⚠️ imbalanced-learn not available - will use simple resampling")
+import optuna
+from optuna.samplers import TPESampler
 import numpy as np
 
 # Try importing SHAP and XGBoost/LightGBM (optional dependencies)
@@ -531,97 +540,179 @@ def train_classification_model_with_improvements(
     else:
         best_name = 'GradientBoosting'
     
-    # Hyperparameter tuning with GridSearchCV
-    print(f"\n🔍 Performing hyperparameter tuning with GridSearchCV ({best_name})...")
+    # Hyperparameter tuning with Optuna (Bayesian optimization)
+    print(f"\n🔍 Performing Bayesian hyperparameter optimization with Optuna ({best_name})...")
     
-    if param_grids and 'param_grid' in param_grids and 'base_model' in param_grids:
-        # Use provided param_grid and base_model
-        param_grid = param_grids['param_grid']
-        base_model = param_grids['base_model']
-    elif best_name == 'RandomForest' and model_type == 'classifier':
-        param_grid = {
-            'n_estimators': [50, 100, 150],
-            'max_depth': [6, 8, 10],
-            'min_samples_split': [2, 5, 10],
-            'max_features': ['sqrt', 'log2'],
-            'class_weight': ['balanced', None]
-        }
-        base_model = RandomForestClassifier(random_state=42, n_jobs=-1)
-    elif best_name == 'LogisticRegression' and model_type == 'classifier':
-        param_grid = {
-            'C': [0.1, 1.0, 10.0, 100.0],
-            'penalty': ['l1', 'l2', 'elasticnet'],
-            'l1_ratio': [0.25, 0.5, 0.75],
-            'class_weight': ['balanced', None],
-            'max_iter': [100, 200]
-        }
-        base_model = LogisticRegression(random_state=42, solver='saga')
-    elif best_name == 'XGBoost' and XGB_AVAILABLE and model_type == 'classifier':
-        param_grid = {
-            'n_estimators': [100, 150],
-            'max_depth': [4, 6, 8],
-            'learning_rate': [0.05, 0.1],
-            'subsample': [0.8, 0.9]
-        }
-        base_model = xgb.XGBClassifier(random_state=42, eval_metric='logloss', use_label_encoder=False)
-    elif best_name == 'LightGBM' and LGB_AVAILABLE and model_type == 'classifier':
-        param_grid = {
-            'n_estimators': [100, 150],
-            'max_depth': [4, 6, 8],
-            'learning_rate': [0.05, 0.1],
-            'subsample': [0.8, 0.9]
-        }
-        base_model = lgb.LGBMClassifier(random_state=42, verbose=-1)
-    elif model_type == 'classifier':
-        param_grid = {
-            'n_estimators': [100, 150],
-            'max_depth': [4, 6, 8],
-            'learning_rate': [0.05, 0.1],
-            'min_samples_split': [2, 5],
-            'n_iter_no_change': [10]
-        }
-        base_model = GradientBoostingClassifier(random_state=42)
-    else:  # regressor
-        param_grid = {
-            'n_estimators': [100, 150],
-            'max_depth': [4, 6, 8],
-            'learning_rate': [0.05, 0.1],
-            'min_samples_split': [2, 5],
-            'n_iter_no_change': [10]
-        }
-        base_model = GradientBoostingRegressor(random_state=42)
+    # Determine base model and create Optuna objective function
+    def create_optuna_objective(X_train, y_train, model_type, best_name, cv_folds):
+        def objective(trial):
+            if best_name == 'RandomForest' and model_type == 'classifier':
+                model = RandomForestClassifier(
+                    n_estimators=trial.suggest_int('n_estimators', 50, 500),
+                    max_depth=trial.suggest_int('max_depth', 3, 15),
+                    min_samples_split=trial.suggest_int('min_samples_split', 2, 20),
+                    max_features=trial.suggest_categorical('max_features', ['sqrt', 'log2', None]),
+                    class_weight=trial.suggest_categorical('class_weight', ['balanced', None]),
+                    random_state=42,
+                    n_jobs=-1
+                )
+            elif best_name == 'LogisticRegression' and model_type == 'classifier':
+                penalty = trial.suggest_categorical('penalty', ['l1', 'l2', 'elasticnet'])
+                l1_ratio = trial.suggest_float('l1_ratio', 0.1, 0.9) if penalty == 'elasticnet' else 0.5
+                # Use saga solver for all penalty types
+                model_params = {
+                    'C': trial.suggest_float('C', 0.01, 100.0, log=True),
+                    'penalty': penalty,
+                    'class_weight': trial.suggest_categorical('class_weight', ['balanced', None]),
+                    'max_iter': trial.suggest_int('max_iter', 100, 500),
+                    'random_state': 42,
+                    'solver': 'saga'
+                }
+                if penalty == 'elasticnet':
+                    model_params['l1_ratio'] = l1_ratio
+                model = LogisticRegression(**model_params)
+            elif model_type == 'classifier':
+                model = GradientBoostingClassifier(
+                    n_estimators=trial.suggest_int('n_estimators', 50, 500),
+                    max_depth=trial.suggest_int('max_depth', 3, 15),
+                    learning_rate=trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+                    min_samples_split=trial.suggest_int('min_samples_split', 2, 20),
+                    subsample=trial.suggest_float('subsample', 0.6, 1.0),
+                    n_iter_no_change=trial.suggest_int('n_iter_no_change', 5, 20),
+                    random_state=42
+                )
+            else:  # regressor
+                model = GradientBoostingRegressor(
+                    n_estimators=trial.suggest_int('n_estimators', 50, 500),
+                    max_depth=trial.suggest_int('max_depth', 3, 15),
+                    learning_rate=trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+                    min_samples_split=trial.suggest_int('min_samples_split', 2, 20),
+                    subsample=trial.suggest_float('subsample', 0.6, 1.0),
+                    n_iter_no_change=trial.suggest_int('n_iter_no_change', 5, 20),
+                    random_state=42
+                )
+            
+            scores = cross_val_score(model, X_train, y_train, cv=cv_folds, 
+                                   scoring='roc_auc' if model_type == 'classifier' else 'r2',
+                                   n_jobs=-1)
+            return scores.mean()
+        
+        return objective
     
-    cv_folds = StratifiedKFold(n_splits=5, shuffle=True, random_state=42) if model_type == 'classifier' else KFold(n_splits=2, shuffle=True, random_state=42)
-    scoring = 'roc_auc' if model_type == 'classifier' else 'neg_mean_squared_error'
+    # Cross-validation strategy
+    # Use time-based CV if temporal ordering is important (e.g., if data has time component)
+    # For now, use stratified/regular CV (can be enhanced with TimeSeriesSplit if temporal features are added)
+    # To use time-based CV, uncomment below and ensure data is sorted by time:
+    # if model_type == 'classifier':
+    #     cv_folds = TimeSeriesSplit(n_splits=5)
+    # else:
+    #     cv_folds = TimeSeriesSplit(n_splits=5)
+    if model_type == 'classifier':
+        cv_folds = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    else:
+        cv_folds = KFold(n_splits=5, shuffle=True, random_state=42)
     
-    model_cv = GridSearchCV(
-        base_model,
-        param_grid,
-        cv=cv_folds,
-        scoring=scoring,
-        n_jobs=-1,
-        verbose=1
+    # Create Optuna study
+    study = optuna.create_study(
+        direction='maximize' if model_type == 'classifier' else 'maximize',
+        sampler=TPESampler(seed=42)
     )
     
-    model_cv.fit(X_train_selected, y_train)
-    print(f"✅ Best parameters: {model_cv.best_params_}")
-    print(f"✅ Best CV score: {model_cv.best_score_:.4f}")
+    # Optimize (use fewer trials for faster execution, can be increased)
+    n_trials = 30  # Reduced from exhaustive grid search for speed
+    study.optimize(
+        create_optuna_objective(X_train_selected, y_train, model_type, best_name, cv_folds),
+        n_trials=n_trials,
+        show_progress_bar=True
+    )
     
-    # Use best model
-    model = model_cv.best_estimator_
+    print(f"✅ Best parameters: {study.best_params}")
+    print(f"✅ Best CV score: {study.best_value:.4f}")
     
-    # Model calibration (only for classification)
+    # Recreate best model with optimal parameters
+    if best_name == 'RandomForest' and model_type == 'classifier':
+        model = RandomForestClassifier(**study.best_params, random_state=42, n_jobs=-1)
+    elif best_name == 'LogisticRegression' and model_type == 'classifier':
+        # Ensure solver is set correctly for penalty type
+        model_params = study.best_params.copy()
+        if 'solver' not in model_params:
+            model_params['solver'] = 'saga'
+        model = LogisticRegression(**model_params, random_state=42)
+    elif model_type == 'classifier':
+        model = GradientBoostingClassifier(**study.best_params, random_state=42)
+    else:
+        model = GradientBoostingRegressor(**study.best_params, random_state=42)
+    
+    model.fit(X_train_selected, y_train)
+    
+    # Build ensemble model (stacking/voting) for better performance
     if model_type == 'classifier':
+        print("\n🔗 Building ensemble model (stacking)...")
+        # Create base models for ensemble
+        base_models = [
+            ('rf', RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42, n_jobs=-1)),
+            ('gb', GradientBoostingClassifier(n_estimators=100, max_depth=6, random_state=42)),
+            ('lr', LogisticRegression(random_state=42, max_iter=200))
+        ]
+        
+        # Use stacking with the best model as meta-learner
+        ensemble_model = StackingClassifier(
+            estimators=base_models,
+            final_estimator=LogisticRegression(random_state=42, max_iter=200),
+            cv=3,
+            n_jobs=-1
+        )
+        ensemble_model.fit(X_train_selected, y_train)
+        
+        # Compare ensemble vs single best model
+        ensemble_score = cross_val_score(ensemble_model, X_train_selected, y_train, 
+                                        cv=cv_folds, scoring='roc_auc', n_jobs=-1).mean()
+        single_score = cross_val_score(model, X_train_selected, y_train, 
+                                      cv=cv_folds, scoring='roc_auc', n_jobs=-1).mean()
+        
+        if ensemble_score > single_score:
+            print(f"✅ Ensemble model performs better (AUC: {ensemble_score:.4f} vs {single_score:.4f}). Using ensemble.")
+            model = ensemble_model
+        else:
+            print(f"✅ Single model performs better (AUC: {single_score:.4f} vs {ensemble_score:.4f}). Using single model.")
+        
+        # Model calibration (only for classification)
         print("\n📊 Calibrating model probabilities...")
         calibrated_model = CalibratedClassifierCV(model, method='isotonic', cv=3)
         calibrated_model.fit(X_train_selected, y_train)
     else:
-        calibrated_model = model
+        # For regression, use stacking regressor
+        print("\n🔗 Building ensemble model (stacking) for regression...")
+        base_models = [
+            ('rf', GradientBoostingRegressor(n_estimators=100, max_depth=8, random_state=42)),
+            ('gb', GradientBoostingRegressor(n_estimators=100, max_depth=6, random_state=42))
+        ]
+        ensemble_model = StackingRegressor(
+            estimators=base_models,
+            final_estimator=GradientBoostingRegressor(n_estimators=50, random_state=42),
+            cv=3,
+            n_jobs=-1
+        )
+        ensemble_model.fit(X_train_selected, y_train)
+        
+        ensemble_score = cross_val_score(ensemble_model, X_train_selected, y_train, 
+                                        cv=cv_folds, scoring='r2', n_jobs=-1).mean()
+        single_score = cross_val_score(model, X_train_selected, y_train, 
+                                      cv=cv_folds, scoring='r2', n_jobs=-1).mean()
+        
+        if ensemble_score > single_score:
+            print(f"✅ Ensemble model performs better (R²: {ensemble_score:.4f} vs {single_score:.4f}). Using ensemble.")
+            calibrated_model = ensemble_model
+        else:
+            print(f"✅ Single model performs better (R²: {single_score:.4f} vs {ensemble_score:.4f}). Using single model.")
+            calibrated_model = model
     
-    # Cross-validation
+    # Cross-validation (using same CV strategy as Optuna)
     print("🔄 Performing 5-fold cross-validation...")
     cv_scoring = 'roc_auc' if model_type == 'classifier' else 'r2'
-    cv_scores = cross_val_score(model, X_train_selected, y_train, cv=cv_folds, scoring=cv_scoring)
+    # Use calibrated model for CV if classification
+    cv_model = calibrated_model if model_type == 'classifier' else model
+    cv_scores = cross_val_score(cv_model, X_train_selected, y_train, cv=cv_folds, scoring=cv_scoring, n_jobs=-1)
     print(f"📈 CV {cv_scoring.upper()}: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
     
     # Make predictions
@@ -700,12 +791,17 @@ def train_classification_model_with_improvements(
         mlflow.log_param("n_features_total", len(feature_names))
         mlflow.log_param("best_model_type", best_name)
         mlflow.log_param("model_calibrated", model_type == 'classifier')
+        mlflow.log_param("ensemble_used", isinstance(model, (StackingClassifier, StackingRegressor)) if model_type == 'classifier' else isinstance(calibrated_model, StackingRegressor))
+        mlflow.log_param("hyperparameter_optimization", "Optuna_TPE")
         if model_type == 'classifier':
             mlflow.log_param("optimal_threshold", optimal_threshold)
             mlflow.log_metric("optimal_threshold_f1", optimal_f1)
         
-        for param_name, param_value in model_cv.best_params_.items():
+        # Log Optuna best parameters
+        for param_name, param_value in study.best_params.items():
             mlflow.log_param(f"best_{param_name}", param_value)
+        mlflow.log_param("optuna_n_trials", n_trials)
+        mlflow.log_metric("optuna_best_score", study.best_value)
         
         mlflow.log_metric(f"cv_{cv_scoring}_mean", cv_scores.mean())
         mlflow.log_metric(f"cv_{cv_scoring}_std", cv_scores.std())
@@ -909,29 +1005,42 @@ try:
         print("Class distribution in y_train:", pd.Series(y_train).value_counts().to_dict())
         print("Class distribution in y_test:", pd.Series(y_test).value_counts().to_dict())
         
-        # If y_train contains only one class, try upsampling the minority class
+        # Advanced resampling with SMOTE if class imbalance exists
         if len(np.unique(y_train)) < 2:
-            print("⚠️ Only one class in y_train after split. Attempting to upsample minority class...")
-            from sklearn.utils import resample
-            X_train_df = pd.DataFrame(X_train, columns=all_feature_cols)
-            y_train_df = pd.Series(y_train, name='promotion_ready')
-            train_df = pd.concat([X_train_df, y_train_df], axis=1)
-            # Separate majority and minority
-            df_majority = train_df[train_df['promotion_ready'] == 0]
-            df_minority = train_df[train_df['promotion_ready'] == 1]
-            if len(df_minority) == 0:
-                print("⚠️ No positive samples in training set. Forcing at least one positive sample.")
-                df_minority = pd.DataFrame([0] * len(df_majority), columns=train_df.columns)
-                df_minority['promotion_ready'] = 1
-            df_minority_upsampled = resample(df_minority, 
-                                             replace=True, 
-                                             n_samples=len(df_majority), 
-                                             random_state=42)
-            train_upsampled = pd.concat([df_majority, df_minority_upsampled])
-            X_train = train_upsampled[all_feature_cols].values
-            y_train = train_upsampled['promotion_ready'].values
-            print("✅ Upsampled minority class in training set.")
-            print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
+            print("⚠️ Only one class in y_train after split. Attempting SMOTE resampling...")
+            try:
+                # Use BorderlineSMOTE for better handling of borderline cases
+                smote = BorderlineSMOTE(random_state=42, k_neighbors=min(5, len(np.where(y_train == 1)[0]) - 1))
+                X_train, y_train = smote.fit_resample(X_train, y_train)
+                print("✅ Applied BorderlineSMOTE resampling.")
+                print("Class distribution in y_train after SMOTE:", pd.Series(y_train).value_counts().to_dict())
+            except Exception as e:
+                print(f"⚠️ SMOTE failed: {e}. Falling back to simple resampling...")
+                from sklearn.utils import resample
+                X_train_df = pd.DataFrame(X_train, columns=all_feature_cols)
+                y_train_df = pd.Series(y_train, name='promotion_ready')
+                train_df = pd.concat([X_train_df, y_train_df], axis=1)
+                df_majority = train_df[train_df['promotion_ready'] == 0]
+                df_minority = train_df[train_df['promotion_ready'] == 1]
+                if len(df_minority) == 0:
+                    print("⚠️ No positive samples in training set. Forcing at least one positive sample.")
+                    df_minority = pd.DataFrame([0] * len(df_majority), columns=train_df.columns)
+                    df_minority['promotion_ready'] = 1
+                df_minority_upsampled = resample(df_minority, replace=True, n_samples=len(df_majority), random_state=42)
+                train_upsampled = pd.concat([df_majority, df_minority_upsampled])
+                X_train = train_upsampled[all_feature_cols].values
+                y_train = train_upsampled['promotion_ready'].values
+                print("✅ Upsampled minority class in training set.")
+                print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
+        elif np.sum(y_train == 1) < np.sum(y_train == 0) * 0.3 and IMBLEARN_AVAILABLE:  # If minority class is < 30% of majority
+            print("🔧 Applying SMOTE for class imbalance...")
+            try:
+                smote = SMOTE(random_state=42, k_neighbors=min(5, np.sum(y_train == 1) - 1))
+                X_train, y_train = smote.fit_resample(X_train, y_train)
+                print("✅ Applied SMOTE resampling.")
+                print("Class distribution in y_train after SMOTE:", pd.Series(y_train).value_counts().to_dict())
+            except Exception as e:
+                print(f"⚠️ SMOTE failed: {e}. Continuing without resampling.")
         
         # Final check before training
         if len(np.unique(y_train)) < 2:
@@ -1076,29 +1185,59 @@ try:
         print("Class distribution in y_train:", pd.Series(y_train).value_counts().to_dict())
         print("Class distribution in y_test:", pd.Series(y_test).value_counts().to_dict())
         
-        # If y_train contains only one class, try upsampling the minority class
+        # Advanced resampling with SMOTE if class imbalance exists
         if len(np.unique(y_train)) < 2:
-            print("⚠️ Only one class in y_train after split. Attempting to upsample minority class...")
-            from sklearn.utils import resample
-            X_train_df = pd.DataFrame(X_train, columns=available_cols_retention)
-            y_train_df = pd.Series(y_train, name='high_flight_risk')
-            train_df = pd.concat([X_train_df, y_train_df], axis=1)
-            # Separate majority and minority
-            df_majority = train_df[train_df['high_flight_risk'] == 0]
-            df_minority = train_df[train_df['high_flight_risk'] == 1]
-            if len(df_minority) == 0:
-                print("⚠️ No positive samples in training set. Forcing at least one positive sample.")
-                df_minority = pd.DataFrame([0] * len(df_majority), columns=train_df.columns)
-                df_minority['high_flight_risk'] = 1
-            df_minority_upsampled = resample(df_minority, 
-                                             replace=True, 
-                                             n_samples=len(df_majority), 
-                                             random_state=42)
-            train_upsampled = pd.concat([df_majority, df_minority_upsampled])
-            X_train = train_upsampled[available_cols_retention].values
-            y_train = train_upsampled['high_flight_risk'].values
-            print("✅ Upsampled minority class in training set.")
-            print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
+            print("⚠️ Only one class in y_train after split. Attempting SMOTE resampling...")
+            if IMBLEARN_AVAILABLE:
+                try:
+                    smote = BorderlineSMOTE(random_state=42, k_neighbors=min(5, len(np.where(y_train == 1)[0]) - 1))
+                    X_train, y_train = smote.fit_resample(X_train, y_train)
+                    print("✅ Applied BorderlineSMOTE resampling.")
+                    print("Class distribution in y_train after SMOTE:", pd.Series(y_train).value_counts().to_dict())
+                except Exception as e:
+                    print(f"⚠️ SMOTE failed: {e}. Falling back to simple resampling...")
+                    from sklearn.utils import resample
+                    X_train_df = pd.DataFrame(X_train, columns=available_cols_retention)
+                    y_train_df = pd.Series(y_train, name='high_flight_risk')
+                    train_df = pd.concat([X_train_df, y_train_df], axis=1)
+                    df_majority = train_df[train_df['high_flight_risk'] == 0]
+                    df_minority = train_df[train_df['high_flight_risk'] == 1]
+                    if len(df_minority) == 0:
+                        print("⚠️ No positive samples in training set. Forcing at least one positive sample.")
+                        df_minority = pd.DataFrame([0] * len(df_majority), columns=train_df.columns)
+                        df_minority['high_flight_risk'] = 1
+                    df_minority_upsampled = resample(df_minority, replace=True, n_samples=len(df_majority), random_state=42)
+                    train_upsampled = pd.concat([df_majority, df_minority_upsampled])
+                    X_train = train_upsampled[available_cols_retention].values
+                    y_train = train_upsampled['high_flight_risk'].values
+                    print("✅ Upsampled minority class in training set.")
+                    print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
+            else:
+                from sklearn.utils import resample
+                X_train_df = pd.DataFrame(X_train, columns=available_cols_retention)
+                y_train_df = pd.Series(y_train, name='high_flight_risk')
+                train_df = pd.concat([X_train_df, y_train_df], axis=1)
+                df_majority = train_df[train_df['high_flight_risk'] == 0]
+                df_minority = train_df[train_df['high_flight_risk'] == 1]
+                if len(df_minority) == 0:
+                    print("⚠️ No positive samples in training set. Forcing at least one positive sample.")
+                    df_minority = pd.DataFrame([0] * len(df_majority), columns=train_df.columns)
+                    df_minority['high_flight_risk'] = 1
+                df_minority_upsampled = resample(df_minority, replace=True, n_samples=len(df_majority), random_state=42)
+                train_upsampled = pd.concat([df_majority, df_minority_upsampled])
+                X_train = train_upsampled[available_cols_retention].values
+                y_train = train_upsampled['high_flight_risk'].values
+                print("✅ Upsampled minority class in training set.")
+                print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
+        elif np.sum(y_train == 1) < np.sum(y_train == 0) * 0.3 and IMBLEARN_AVAILABLE:
+            print("🔧 Applying SMOTE for class imbalance...")
+            try:
+                smote = SMOTE(random_state=42, k_neighbors=min(5, np.sum(y_train == 1) - 1))
+                X_train, y_train = smote.fit_resample(X_train, y_train)
+                print("✅ Applied SMOTE resampling.")
+                print("Class distribution in y_train after SMOTE:", pd.Series(y_train).value_counts().to_dict())
+            except Exception as e:
+                print(f"⚠️ SMOTE failed: {e}. Continuing without resampling.")
         
         # Final check before training
         if len(np.unique(y_train)) < 2:
@@ -1258,29 +1397,59 @@ try:
         print("Class distribution in y_train:", pd.Series(y_train).value_counts().to_dict())
         print("Class distribution in y_test:", pd.Series(y_test).value_counts().to_dict())
         
-        # If y_train contains only one class, try upsampling the minority class
+        # Advanced resampling with SMOTE if class imbalance exists
         if len(np.unique(y_train)) < 2:
-            print("⚠️ Only one class in y_train after split. Attempting to upsample minority class...")
-            from sklearn.utils import resample
-            X_train_df = pd.DataFrame(X_train, columns=available_cols_potential)
-            y_train_df = pd.Series(y_train, name='high_potential')
-            train_df = pd.concat([X_train_df, y_train_df], axis=1)
-            # Separate majority and minority
-            df_majority = train_df[train_df['high_potential'] == 0]
-            df_minority = train_df[train_df['high_potential'] == 1]
-            if len(df_minority) == 0:
-                print("⚠️ No positive samples in training set. Forcing at least one positive sample.")
-                df_minority = pd.DataFrame([0] * len(df_majority), columns=train_df.columns)
-                df_minority['high_potential'] = 1
-            df_minority_upsampled = resample(df_minority, 
-                                             replace=True, 
-                                             n_samples=len(df_majority), 
-                                             random_state=42)
-            train_upsampled = pd.concat([df_majority, df_minority_upsampled])
-            X_train = train_upsampled[available_cols_potential].values
-            y_train = train_upsampled['high_potential'].values
-            print("✅ Upsampled minority class in training set.")
-            print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
+            print("⚠️ Only one class in y_train after split. Attempting SMOTE resampling...")
+            if IMBLEARN_AVAILABLE:
+                try:
+                    smote = BorderlineSMOTE(random_state=42, k_neighbors=min(5, len(np.where(y_train == 1)[0]) - 1))
+                    X_train, y_train = smote.fit_resample(X_train, y_train)
+                    print("✅ Applied BorderlineSMOTE resampling.")
+                    print("Class distribution in y_train after SMOTE:", pd.Series(y_train).value_counts().to_dict())
+                except Exception as e:
+                    print(f"⚠️ SMOTE failed: {e}. Falling back to simple resampling...")
+                    from sklearn.utils import resample
+                    X_train_df = pd.DataFrame(X_train, columns=available_cols_potential)
+                    y_train_df = pd.Series(y_train, name='high_potential')
+                    train_df = pd.concat([X_train_df, y_train_df], axis=1)
+                    df_majority = train_df[train_df['high_potential'] == 0]
+                    df_minority = train_df[train_df['high_potential'] == 1]
+                    if len(df_minority) == 0:
+                        print("⚠️ No positive samples in training set. Forcing at least one positive sample.")
+                        df_minority = pd.DataFrame([0] * len(df_majority), columns=train_df.columns)
+                        df_minority['high_potential'] = 1
+                    df_minority_upsampled = resample(df_minority, replace=True, n_samples=len(df_majority), random_state=42)
+                    train_upsampled = pd.concat([df_majority, df_minority_upsampled])
+                    X_train = train_upsampled[available_cols_potential].values
+                    y_train = train_upsampled['high_potential'].values
+                    print("✅ Upsampled minority class in training set.")
+                    print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
+            else:
+                from sklearn.utils import resample
+                X_train_df = pd.DataFrame(X_train, columns=available_cols_potential)
+                y_train_df = pd.Series(y_train, name='high_potential')
+                train_df = pd.concat([X_train_df, y_train_df], axis=1)
+                df_majority = train_df[train_df['high_potential'] == 0]
+                df_minority = train_df[train_df['high_potential'] == 1]
+                if len(df_minority) == 0:
+                    print("⚠️ No positive samples in training set. Forcing at least one positive sample.")
+                    df_minority = pd.DataFrame([0] * len(df_majority), columns=train_df.columns)
+                    df_minority['high_potential'] = 1
+                df_minority_upsampled = resample(df_minority, replace=True, n_samples=len(df_majority), random_state=42)
+                train_upsampled = pd.concat([df_majority, df_minority_upsampled])
+                X_train = train_upsampled[available_cols_potential].values
+                y_train = train_upsampled['high_potential'].values
+                print("✅ Upsampled minority class in training set.")
+                print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
+        elif np.sum(y_train == 1) < np.sum(y_train == 0) * 0.3 and IMBLEARN_AVAILABLE:
+            print("🔧 Applying SMOTE for class imbalance...")
+            try:
+                smote = SMOTE(random_state=42, k_neighbors=min(5, np.sum(y_train == 1) - 1))
+                X_train, y_train = smote.fit_resample(X_train, y_train)
+                print("✅ Applied SMOTE resampling.")
+                print("Class distribution in y_train after SMOTE:", pd.Series(y_train).value_counts().to_dict())
+            except Exception as e:
+                print(f"⚠️ SMOTE failed: {e}. Continuing without resampling.")
         
         # Final check before training
         if len(np.unique(y_train)) < 2:

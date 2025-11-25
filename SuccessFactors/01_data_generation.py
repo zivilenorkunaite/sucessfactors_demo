@@ -825,6 +825,9 @@ def load_employees_from_data_product(generated_employees=None):
             "SELECT * FROM core_workforce_data_dp.coreworkforcedata.coreworkforce_standardfields"
         )
         
+        # Cache raw data product DataFrame to avoid re-reading from source
+        employees_df_raw.cache()
+        
         record_count = employees_df_raw.count()
         print(f"✅ Successfully loaded {record_count:,} employee records from DATA PRODUCT")
         print(f"   📦 Data Source: SAP SuccessFactors Data Product (Delta Sharing)")
@@ -839,11 +842,26 @@ def load_employees_from_data_product(generated_employees=None):
         
         if start_date_col:
             print(f"   🔍 Deduplicating by employee_id using {start_date_col} (keeping latest record per employee)...")
+            # Optimize window function: repartition by userId to ensure proper data distribution
+            # This reduces shuffling during window operation and improves performance
+            # Calculate optimal partition count based on data size
+            num_partitions = max(1, min(200, record_count // 10000))  # Reasonable partition count
+            employees_df_raw = employees_df_raw.repartition(num_partitions, "userId")
+            
             # Use window function to rank records by startDate, keeping latest (descending order)
-            window_spec = Window.partitionBy("userId").orderBy(F.col(start_date_col).desc())
+            # Handle NULL dates by putting them last (using coalesce with a very old date)
+            # Partitioning by userId ensures all records for same user are on same partition
+            # This eliminates cross-partition shuffling during window operation
+            window_spec = Window.partitionBy("userId").orderBy(
+                F.coalesce(F.col(start_date_col), F.lit("1900-01-01").cast("date")).desc()
+            )
             employees_df_raw = employees_df_raw.withColumn("row_num", F.row_number().over(window_spec)) \
                                                .filter(F.col("row_num") == LATEST_RECORD_ROW_NUM) \
                                                .drop("row_num")
+            
+            # Coalesce after deduplication to reduce partition count (we have fewer rows now)
+            # This improves performance for subsequent operations
+            employees_df_raw = employees_df_raw.coalesce(max(1, num_partitions // 2))
             
             deduped_count = employees_df_raw.count()
             print(f"   ✅ Deduplicated to {deduped_count:,} unique employee records ({record_count - deduped_count:,} duplicates removed)")
@@ -979,6 +997,9 @@ def load_employees_from_data_product(generated_employees=None):
             get_last_name_udf(F.col("employee_id"))
         )
         
+        # Cache transformed employees DataFrame for reuse
+        employees_df.cache()
+        
         final_count = employees_df.count()
         print(f"✅ Transformed employees data: {final_count:,} records")
         print(f"   📊 Final Status: Using DATA PRODUCT data")
@@ -1014,13 +1035,16 @@ def load_employees_from_data_product(generated_employees=None):
             F.col("last_name").alias("last_name")
         )
         
+        # Cache generated employees DataFrame for reuse
+        employees_df.cache()
+        
         final_count = employees_df.count()
         print(f"✅ Using generated employees data: {final_count:,} records")
         print(f"   📊 Final Status: Using GENERATED data (fallback)")
         return employees_df, 'GENERATED'  # Return source indicator
 
 
-def load_performance_from_data_product(generated_performance_reviews=None, employees=None):
+def load_performance_from_data_product(generated_performance_reviews=None, employees=None, employees_df=None):
     """
     Load performance reviews from SAP SuccessFactors Data Product.
     Falls back to generated data if data product load fails.
@@ -1039,17 +1063,38 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
             "SELECT * FROM performance_data_dp.performancedata.performancedata"
         )
         
+        # Cache raw data product DataFrame to avoid re-reading from source
+        performance_df_raw.cache()
+        
         record_count = performance_df_raw.count()
         print(f"✅ Successfully loaded {record_count:,} performance records from DATA PRODUCT")
         print(f"   📦 Data Source: SAP SuccessFactors Data Product (Delta Sharing)")
         
         # Deduplicate: Keep only the latest review per employee_id based on reviewPeriodEndDt
         if "reviewPeriodEndDt" in performance_df_raw.columns:
-            window_spec = Window.partitionBy("userId").orderBy(F.col("reviewPeriodEndDt").desc())
+            # Optimize window function: repartition by userId to ensure proper data distribution
+            # This reduces shuffling during window operation and improves performance
+            # Calculate optimal partition count based on data size
+            num_partitions = max(1, min(200, record_count // 10000))  # Reasonable partition count
+            performance_df_raw = performance_df_raw.repartition(num_partitions, "userId")
+            
+            # Use window function to rank records by reviewPeriodEndDt, keeping latest (descending order)
+            # Handle NULL dates by putting them last (using coalesce with a very old date)
+            # Partitioning by userId ensures all records for same user are on same partition
+            # This eliminates cross-partition shuffling during window operation
+            window_spec = Window.partitionBy("userId").orderBy(
+                F.coalesce(F.col("reviewPeriodEndDt"), F.lit("1900-01-01").cast("date")).desc()
+            )
             performance_df_raw = performance_df_raw.withColumn("row_num", F.row_number().over(window_spec)) \
                                                  .filter(F.col("row_num") == 1) \
                                                  .drop("row_num")
-            print(f"   ✅ Deduplicated to {performance_df_raw.count():,} unique employee reviews (by max reviewPeriodEndDt)")
+            
+            # Coalesce after deduplication to reduce partition count (we have fewer rows now)
+            # This improves performance for subsequent operations
+            performance_df_raw = performance_df_raw.coalesce(max(1, num_partitions // 2))
+            
+            deduped_count = performance_df_raw.count()
+            print(f"   ✅ Deduplicated to {deduped_count:,} unique employee reviews ({record_count - deduped_count:,} duplicates removed, by max reviewPeriodEndDt)")
         
         # Map columns to expected names
         # Use try_cast to handle malformed values
@@ -1063,7 +1108,10 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
             F.coalesce(F.expr("try_cast(year(reviewPeriodStartDt) as int)"), F.lit(DEFAULT_REVIEW_YEAR)).alias("review_period"),  # Default to 2024 if invalid
             F.lit(None).cast("string").alias("reviewer_id"),
             F.lit(COMPLETION_STATUS_COMPLETED).alias("status")
-        ).filter(F.col("currentPerformanceRating").isNotNull() & (F.col("numberValue") > 0))
+        ).filter(F.col("currentPerformanceRating").isNotNull() & (F.col("currentPerformanceRating") > 0))
+        
+        # Cache transformed performance DataFrame for reuse
+        performance_df.cache()
         
         final_count = performance_df.count()
         print(f"✅ Transformed performance data: {final_count:,} records")
@@ -1077,6 +1125,16 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
         
         # Fallback to generated data - generate only when needed
         if generated_performance_reviews is None:
+            # Collect employees list only if needed (lazy collection)
+            if employees is None or len(employees) == 0:
+                if employees_df is not None:
+                    print("   → Collecting employees list from DataFrame for performance reviews generation...")
+                    employees = _collect_employees_list_if_needed(employees_df)
+                else:
+                    print("   → Generating employees and performance reviews data (on-demand)...")
+                    employees = generate_employees()
+                    print(f"   ✅ Generated {len(employees):,} employees")
+            
             if employees is None or len(employees) == 0:
                 print("   → Generating employees and performance reviews data (on-demand)...")
                 employees = generate_employees()
@@ -1104,18 +1162,168 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
             F.col("status").alias("status")
         )
         
+        # Cache generated performance DataFrame for reuse
+        performance_df.cache()
+        
         final_count = performance_df.count()
         print(f"✅ Using generated performance reviews data: {final_count:,} records")
         print(f"   📊 Final Status: Using GENERATED data (fallback)")
         return performance_df, 'GENERATED'  # Return source indicator
 
 
+def load_learning_from_data_product(generated_learning_records=None, employees_df=None, employees_list=None, performance_reviews_df=None, performance_reviews_list=None):
+    """
+    Load learning records from SAP SuccessFactors Data Product.
+    Falls back to generated data if data product load fails.
+    
+    Args:
+        generated_learning_records: Optional list of generated learning record dicts for fallback
+        employees_df: Optional DataFrame of employees (preferred, avoids collection)
+        employees_list: Optional list of employee dicts (fallback, will collect from DataFrame if needed)
+        performance_reviews_df: Optional DataFrame of performance reviews (preferred, avoids collection)
+        performance_reviews_list: Optional list of performance review dicts (fallback, will collect from DataFrame if needed)
+        
+    Returns:
+        Spark DataFrame with learning records data (from DP or generated)
+    """
+    print("📊 Loading learning records from SAP SuccessFactors Data Product...")
+    print("   Source: learning_data_dp.learningdata.learninghistory")
+    try:
+        learning_df_raw = spark.sql(
+            "SELECT * FROM learning_data_dp.learningdata.learninghistory"
+        )
+        
+        # Cache raw data product DataFrame to avoid re-reading from source
+        learning_df_raw.cache()
+        
+        record_count = learning_df_raw.count()
+        print(f"✅ Successfully loaded {record_count:,} learning records from DATA PRODUCT")
+        print(f"   📦 Data Source: SAP SuccessFactors Data Product (Delta Sharing)")
+        
+        # Map columns to expected names
+        # Use try_cast to handle malformed values
+        # Map completion status IDs to strings: "1"->Completed, "2"->In Progress, "3"->Not Started
+        learning_df = learning_df_raw.select(
+            F.col("userId").alias("employee_id"),
+            F.coalesce(F.col("learningItemId"), F.concat(F.lit("LRN"), F.abs(F.hash(F.col("userId"))).cast("string"))).alias("learning_id"),
+            F.coalesce(F.col("learningItemName"), F.lit("Unknown Course")).alias("course_title"),
+            # Map category from keywords or use default
+            F.when(F.lower(F.col("learningItemName")).rlike("technical|tech|programming|coding"), "Technical Skills")
+             .when(F.lower(F.col("learningItemName")).rlike("leadership|manage|lead"), "Leadership")
+             .when(F.lower(F.col("learningItemName")).rlike("communication|communicate|present"), "Communication")
+             .when(F.lower(F.col("learningItemName")).rlike("project|pm|agile"), "Project Management")
+             .when(F.lower(F.col("learningItemName")).rlike("data|analytics|analysis"), "Data Analysis")
+             .when(F.lower(F.col("learningItemName")).rlike("product|pm"), "Product Management")
+             .when(F.lower(F.col("learningItemName")).rlike("sales|sell"), "Sales Training")
+             .when(F.lower(F.col("learningItemName")).rlike("compliance|legal|policy"), "Compliance")
+             .otherwise("Technical Skills").alias("category"),
+            F.coalesce(F.expr("try_cast(completionDate as date)"), F.expr("try_cast(completedDate as date)"), F.current_date()).alias("completion_date"),
+            F.coalesce(F.expr("try_cast(hoursCompleted as int)"), F.expr("try_cast(totalHours as int)"), F.lit(0)).alias("hours_completed"),
+            # Map completion status ID to string
+            F.when(F.col("completionStatusId") == COMPLETION_STATUS_ID_COMPLETED, COMPLETION_STATUS_COMPLETED)
+             .when(F.col("completionStatusId") == COMPLETION_STATUS_ID_IN_PROGRESS, COMPLETION_STATUS_IN_PROGRESS)
+             .when(F.col("completionStatusId") == COMPLETION_STATUS_ID_NOT_STARTED, COMPLETION_STATUS_NOT_STARTED)
+             .otherwise(F.coalesce(F.col("completionStatus"), F.lit(COMPLETION_STATUS_NOT_STARTED))).alias("completion_status"),
+            F.coalesce(F.expr("try_cast(score as int)"), F.expr("try_cast(finalScore as int)")).alias("score")
+        ).filter(F.col("userId").isNotNull())
+        
+        # Cache transformed learning DataFrame for reuse
+        learning_df.cache()
+        
+        final_count = learning_df.count()
+        print(f"✅ Transformed learning data: {final_count:,} records")
+        print(f"   📊 Final Status: Using DATA PRODUCT data")
+        return learning_df, 'DATA PRODUCT'  # Return source indicator
+        
+    except Exception as e:
+        print(f"⚠️ Error loading learning from data product: {e}")
+        print(f"   🔄 FALLBACK: Switching to generated learning records data...")
+        print(f"   📦 Data Source: Generated (simulated)")
+        
+        # Fallback to generated data - generate only when needed
+        if generated_learning_records is None:
+            # Collect employees list only if needed for generation (lazy collection)
+            if employees_list is None:
+                if employees_df is not None:
+                    print("   → Collecting employees list from DataFrame for learning records generation...")
+                    employees_list = _collect_employees_list_if_needed(employees_df)
+                else:
+                    print("   → Generating employees for learning records (on-demand)...")
+                    employees_list = generate_employees()
+                    print(f"   ✅ Generated {len(employees_list):,} employees")
+            
+            if employees_list is None or len(employees_list) == 0:
+                print("   → Generating employees for learning records (on-demand)...")
+                employees_list = generate_employees()
+                print(f"   ✅ Generated {len(employees_list):,} employees")
+            
+            # Collect performance reviews list only if needed for generation (lazy collection)
+            if performance_reviews_list is None:
+                if performance_reviews_df is not None:
+                    print("   → Collecting performance reviews list from DataFrame for learning records generation...")
+                    try:
+                        performance_reviews_list = [
+                            {
+                                'employee_id': row['employee_id'],
+                                'review_date': row['review_date'],
+                                'overall_rating': row['overall_rating'],
+                                'competency_rating': row['competency_rating'],
+                                'goals_achievement': row['goals_achievement'],
+                                'review_id': row['review_id'],
+                                'review_period': row['review_period'],
+                                'reviewer_id': row['reviewer_id'],
+                                'status': row['status']
+                            }
+                            for row in performance_reviews_df.toLocalIterator()  # Use toLocalIterator instead of collect()
+                        ]
+                    except Exception as e:
+                        print(f"   ⚠️ Could not collect performance reviews: {e}")
+                        performance_reviews_list = None
+                else:
+                    print("   → Generating performance reviews for learning records (on-demand)...")
+                    performance_reviews_list = generate_performance_reviews(employees_list)
+                    print(f"   ✅ Generated {len(performance_reviews_list):,} performance reviews")
+            
+            if performance_reviews_list is None or len(performance_reviews_list) == 0:
+                print("   → Generating performance reviews for learning records (on-demand)...")
+                performance_reviews_list = generate_performance_reviews(employees_list)
+                print(f"   ✅ Generated {len(performance_reviews_list):,} performance reviews")
+            
+            print(f"   → Generating learning records data (on-demand) for {len(employees_list):,} employees...")
+            generated_learning_records = generate_learning_records(employees_list, performance_reviews_list)
+        
+        # Convert generated data to DataFrame with correct schema
+        learning_df_generated = spark.createDataFrame(generated_learning_records)
+        learning_df = learning_df_generated.select(
+            F.col("learning_id").cast("string").alias("learning_id"),
+            F.col("employee_id").cast("string").alias("employee_id"),
+            F.col("course_title").cast("string").alias("course_title"),
+            F.col("category").cast("string").alias("category"),
+            F.col("completion_date").cast("date").alias("completion_date"),
+            F.col("hours_completed").cast("integer").alias("hours_completed"),
+            F.col("completion_status").cast("string").alias("completion_status"),
+            F.col("score").cast("integer").alias("score")
+        )
+        
+        # Cache generated learning DataFrame for reuse
+        learning_df.cache()
+        
+        final_count = learning_df.count()
+        print(f"✅ Using generated learning records data: {final_count:,} records")
+        print(f"   📊 Final Status: Using GENERATED data (fallback)")
+        return learning_df, 'GENERATED'  # Return source indicator
+
+
 # ============================================================================
 # MAIN DATA LOADING FUNCTION
 # ============================================================================
 
-def _extract_employees_list_from_df(employees_df):
-    """Helper function to extract employees list from DataFrame for use in generation functions"""
+def _prepare_employees_df_for_generation(employees_df):
+    """
+    Prepare employees DataFrame for use in generation functions.
+    Adds computed date columns needed for goals and compensation generation.
+    Returns DataFrame (not collected) to avoid driver memory issues.
+    """
     try:
         # Calculate hire_date and current_job_start_date from tenure information
         # These are needed for goals and compensation generation
@@ -1127,13 +1335,32 @@ def _extract_employees_list_from_df(employees_df):
             F.date_sub(F.current_date(), F.col("months_in_current_role") * 30)
         )
         
-        employees_list = []
-        for row in employees_df_with_dates.select(
+        return employees_df_with_dates.select(
             'employee_id', 'age', 'gender', 'department', 'job_title', 'job_level',
             'location', 'employment_type', 'base_salary', 'tenure_months',
             'months_in_current_role', 'employment_status', 'first_name', 'last_name',
             'hire_date', 'current_job_start_date'
-        ).collect():
+        )
+    except Exception as e:
+        print(f"   ⚠️ Warning: Could not prepare employees DataFrame: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def _collect_employees_list_if_needed(employees_df_prepared):
+    """
+    Collect employees list from DataFrame only when fallback generation is needed.
+    This avoids unnecessary collection when data products are available.
+    """
+    if employees_df_prepared is None:
+        return None
+    
+    try:
+        employees_list = []
+        # Use toLocalIterator() to process in batches instead of collecting all at once
+        # This reduces driver memory pressure for large datasets
+        for row in employees_df_prepared.toLocalIterator():
             # Convert Spark date objects to Python date objects
             hire_date_val = row['hire_date']
             if hire_date_val is not None:
@@ -1170,7 +1397,7 @@ def _extract_employees_list_from_df(employees_df):
         
         return employees_list
     except Exception as e:
-        print(f"   ⚠️ Warning: Could not extract employees list from DataFrame: {e}")
+        print(f"   ⚠️ Warning: Could not collect employees list: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -1196,15 +1423,22 @@ def load_or_generate_data():
     print("EMPLOYEES DATASET")
     print("="*80)
     employees_df, employees_source = load_employees_from_data_product(generated_employees=None)
+    # Cache employees DataFrame as it will be used multiple times (extraction, summary, saving)
+    employees_df.cache()
     data_sources['employees'] = employees_source
     
-    # Extract employees list from DataFrame for use in dependent datasets
-    employees_list_for_dependencies = _extract_employees_list_from_df(employees_df)
-    if employees_list_for_dependencies:
-        print(f"   ℹ️ Extracted {len(employees_list_for_dependencies):,} employees for dependent dataset generation")
+    # Prepare employees DataFrame for use in dependent datasets (adds computed date columns)
+    # Keep as DataFrame to avoid collecting unless fallback generation is needed
+    employees_df_for_dependencies = _prepare_employees_df_for_generation(employees_df)
+    if employees_df_for_dependencies is not None:
+        employees_count_for_deps = employees_df_for_dependencies.count()
+        print(f"   ℹ️ Prepared {employees_count_for_deps:,} employees DataFrame for dependent dataset generation")
+        # Will collect only if fallback generation is needed (lazy collection)
+        employees_list_for_dependencies = None  # Will be collected only when needed
     else:
-        # If extraction failed, use the generated employees (shouldn't happen, but fallback)
-        print("   ⚠️ Could not extract employees list, will generate if needed")
+        # If preparation failed, use None (will trigger generation if needed)
+        print("   ⚠️ Could not prepare employees DataFrame, will generate if needed")
+        employees_list_for_dependencies = None
     
     # Try to load performance from data product (with fallback to generated)
     print("\n" + "="*80)
@@ -1212,32 +1446,20 @@ def load_or_generate_data():
     print("="*80)
     performance_df, performance_source = load_performance_from_data_product(
         generated_performance_reviews=None,
-        employees=employees_list_for_dependencies
+        employees=employees_list_for_dependencies,
+        employees_df=employees_df_for_dependencies  # Pass DataFrame for lazy collection
     )
+    # Cache performance DataFrame as it will be used multiple times (extraction, summary, saving)
+    performance_df.cache()
     data_sources['performance'] = performance_source
     
-    # Extract performance reviews list for learning generation if fallback needed
-    performance_reviews_list = None
-    try:
-        performance_reviews_list = [
-            {
-                'employee_id': row['employee_id'],
-                'review_date': row['review_date'],
-                'overall_rating': row['overall_rating'],
-                'competency_rating': row['competency_rating'],
-                'goals_achievement': row['goals_achievement'],
-                'review_id': row['review_id'],
-                'review_period': row['review_period'],
-                'reviewer_id': row['reviewer_id'],
-                'status': row['status']
-            }
-            for row in performance_df.select(
-                'employee_id', 'review_date', 'overall_rating', 'competency_rating',
-                'goals_achievement', 'review_id', 'review_period', 'reviewer_id', 'status'
-            ).collect()
-        ]
-    except Exception:
-        performance_reviews_list = None
+    # Keep performance reviews as DataFrame - will collect only if fallback generation is needed
+    # This avoids unnecessary collection when data products are available
+    performance_reviews_df = performance_df.select(
+        'employee_id', 'review_date', 'overall_rating', 'competency_rating',
+        'goals_achievement', 'review_id', 'review_period', 'reviewer_id', 'status'
+    )
+    performance_reviews_list = None  # Will be collected only when needed for fallback generation
     
     # Try to load learning from data product (with fallback to generated)
     print("\n" + "="*80)
@@ -1245,9 +1467,13 @@ def load_or_generate_data():
     print("="*80)
     learning_df, learning_source = load_learning_from_data_product(
         generated_learning_records=None,
-        employees=employees_list_for_dependencies,
-        performance_reviews=performance_reviews_list
+        employees_df=employees_df_for_dependencies,  # Pass DataFrame instead of list
+        employees_list=employees_list_for_dependencies,  # Keep for backward compatibility
+        performance_reviews_df=performance_reviews_df,  # Pass DataFrame instead of list
+        performance_reviews_list=performance_reviews_list  # Keep for backward compatibility
     )
+    # Cache learning DataFrame as it will be used multiple times (summary, saving)
+    learning_df.cache()
     data_sources['learning'] = learning_source
     
     # Goals and Compensation - always use generated data (no data products available yet)
@@ -1258,12 +1484,45 @@ def load_or_generate_data():
     print("   📦 Data Source: Generated (simulated) - No data products available")
     
     # Generate only what's needed for goals and compensation
+    # Collect employees list only if needed (lazy collection)
+    if employees_list_for_dependencies is None:
+        if employees_df_for_dependencies is not None:
+            print("   → Collecting employees list from DataFrame for goals/compensation generation...")
+            employees_list_for_dependencies = _collect_employees_list_if_needed(employees_df_for_dependencies)
+        else:
+            print("   → Generating employees for goals/compensation...")
+            employees_list_for_dependencies = generate_employees()
+            print(f"   ✅ Generated {len(employees_list_for_dependencies):,} employees")
+    
     if employees_list_for_dependencies is None or len(employees_list_for_dependencies) == 0:
         print("   → Generating employees for goals/compensation...")
         employees_list_for_dependencies = generate_employees()
         print(f"   ✅ Generated {len(employees_list_for_dependencies):,} employees")
     
     # Generate performance reviews if not already available (needed for goals/compensation)
+    # Collect performance reviews list only if needed (lazy collection)
+    if performance_reviews_list is None:
+        if performance_reviews_df is not None:
+            print("   → Collecting performance reviews list from DataFrame for goals/compensation generation...")
+            try:
+                performance_reviews_list = [
+                    {
+                        'employee_id': row['employee_id'],
+                        'review_date': row['review_date'],
+                        'overall_rating': row['overall_rating'],
+                        'competency_rating': row['competency_rating'],
+                        'goals_achievement': row['goals_achievement'],
+                        'review_id': row['review_id'],
+                        'review_period': row['review_period'],
+                        'reviewer_id': row['reviewer_id'],
+                        'status': row['status']
+                    }
+                    for row in performance_reviews_df.toLocalIterator()  # Use toLocalIterator instead of collect()
+                ]
+            except Exception as e:
+                print(f"   ⚠️ Could not collect performance reviews: {e}")
+                performance_reviews_list = None
+    
     if performance_reviews_list is None or len(performance_reviews_list) == 0:
         print("   → Generating performance reviews for goals/compensation...")
         performance_reviews_list = generate_performance_reviews(employees_list_for_dependencies)
@@ -1297,6 +1556,9 @@ def load_or_generate_data():
     else:
         goals_df = spark.createDataFrame(goals_data)
     
+    # Cache goals DataFrame as it will be used multiple times (summary, saving)
+    goals_df.cache()
+    
     if len(compensation_data) == 0:
         print("   ⚠️ Warning: No compensation records generated. Creating empty DataFrame with schema...")
         # Create empty DataFrame with proper schema
@@ -1312,22 +1574,32 @@ def load_or_generate_data():
         compensation_df = spark.createDataFrame([], schema=compensation_schema)
     else:
         compensation_df = spark.createDataFrame(compensation_data)
+    
+    # Cache compensation DataFrame as it will be used multiple times (summary, saving)
+    compensation_df.cache()
+    
     data_sources['goals'] = 'GENERATED'
     data_sources['compensation'] = 'GENERATED'
     print(f"✅ Goals: {goals_df.count():,} records (Generated)")
     print(f"✅ Compensation: {compensation_df.count():,} records (Generated)")
     
     # Print summary
+    # Compute counts once and reuse (DataFrames are already cached)
     print("\n" + "="*80)
     print("📊 DATA SOURCE SUMMARY")
     print("="*80)
     print("Dataset                    | Source          | Records")
     print("-" * 80)
-    print(f"Employees                  | {data_sources['employees']:<15} | {employees_df.count():>10,}")
-    print(f"Performance Reviews         | {data_sources['performance']:<15} | {performance_df.count():>10,}")
-    print(f"Learning Records           | {data_sources['learning']:<15} | {learning_df.count():>10,}")
-    print(f"Goals                      | {data_sources['goals']:<15} | {goals_df.count():>10,}")
-    print(f"Compensation               | {data_sources['compensation']:<15} | {compensation_df.count():>10,}")
+    employees_count = employees_df.count()
+    performance_count = performance_df.count()
+    learning_count = learning_df.count()
+    goals_count = goals_df.count()
+    compensation_count = compensation_df.count()
+    print(f"Employees                  | {data_sources['employees']:<15} | {employees_count:>10,}")
+    print(f"Performance Reviews         | {data_sources['performance']:<15} | {performance_count:>10,}")
+    print(f"Learning Records           | {data_sources['learning']:<15} | {learning_count:>10,}")
+    print(f"Goals                      | {data_sources['goals']:<15} | {goals_count:>10,}")
+    print(f"Compensation               | {data_sources['compensation']:<15} | {compensation_count:>10,}")
     print("="*80)
     print("✅ All data loaded/generated successfully")
     print("="*80)
@@ -1382,6 +1654,13 @@ employees_df = employees_df.withColumn("age", F.coalesce(F.expr("try_cast(age as
                            .withColumn("first_name", F.coalesce(F.col("first_name"), F.lit("Unknown"))) \
                            .withColumn("last_name", F.coalesce(F.col("last_name"), F.lit("Unknown")))
 
+# Cache final transformed DataFrames before saving (they may be used multiple times)
+employees_df.cache()
+performance_df.cache()
+learning_df.cache()
+goals_df.cache()
+compensation_df.cache()
+
 # Save as Unity Catalog tables (Delta tables)
 table_names = {
     'employees': employees_df,
@@ -1391,15 +1670,24 @@ table_names = {
     'compensation': compensation_df
 }
 
+# Compute counts once before saving (DataFrames are already cached)
+table_counts = {
+    'employees': employees_df.count(),
+    'performance': performance_df.count(),
+    'learning': learning_df.count(),
+    'goals': goals_df.count(),
+    'compensation': compensation_df.count()
+}
+
 for table_name, df in table_names.items():
     full_table_name = f"{catalog_name}.{schema_name}.{table_name}"
     # Use overwriteSchema to prevent schema merge conflicts
     df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(full_table_name)
-    print(f"✅ Created table: {full_table_name} ({df.count():,} rows)")
+    print(f"✅ Created table: {full_table_name} ({table_counts[table_name]:,} rows)")
 
 print(f"\n✅ All data saved to Unity Catalog: {catalog_name}.{schema_name}")
 
-# Display summary
+# Display summary (reuse cached counts)
 displayHTML(f"""
 <div style="background: linear-gradient(135deg, #0052CC 0%, #0070F2 100%); 
             padding: 25px; border-radius: 15px; color: white; margin: 20px 0;">
@@ -1407,23 +1695,23 @@ displayHTML(f"""
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
         <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 10px; text-align: center;">
             <h3 style="margin: 0; color: #FFD93D;">Employees</h3>
-            <p style="font-size: 24px; margin: 10px 0;">{employees_df.count():,}</p>
+            <p style="font-size: 24px; margin: 10px 0;">{table_counts['employees']:,}</p>
         </div>
         <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 10px; text-align: center;">
             <h3 style="margin: 0; color: #FFD93D;">Performance Reviews</h3>
-            <p style="font-size: 24px; margin: 10px 0;">{performance_df.count():,}</p>
+            <p style="font-size: 24px; margin: 10px 0;">{table_counts['performance']:,}</p>
         </div>
         <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 10px; text-align: center;">
             <h3 style="margin: 0; color: #FFD93D;">Learning Records</h3>
-            <p style="font-size: 24px; margin: 10px 0;">{learning_df.count():,}</p>
+            <p style="font-size: 24px; margin: 10px 0;">{table_counts['learning']:,}</p>
         </div>
         <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 10px; text-align: center;">
             <h3 style="margin: 0; color: #FFD93D;">Goals</h3>
-            <p style="font-size: 24px; margin: 10px 0;">{goals_df.count():,}</p>
+            <p style="font-size: 24px; margin: 10px 0;">{table_counts['goals']:,}</p>
         </div>
         <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 10px; text-align: center;">
             <h3 style="margin: 0; color: #FFD93D;">Compensation</h3>
-            <p style="font-size: 24px; margin: 10px 0;">{compensation_df.count():,}</p>
+            <p style="font-size: 24px; margin: 10px 0;">{table_counts['compensation']:,}</p>
         </div>
     </div>
     <p style="text-align: center; margin-top: 20px; opacity: 0.9;">
