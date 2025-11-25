@@ -225,97 +225,98 @@ def prepare_ml_features_for_prediction(emp_dict, employees_df, spark, catalog_na
     from datetime import datetime
     
     # Basic features - ensure all values are not None and convert to appropriate types
-    age = emp_dict.get('age') or 30
+    # Use explicit None checks instead of 'or' to avoid treating 0 as falsy
+    age = emp_dict.get('age')
     if age is None:
         age = 30
     age = int(age)
     
-    job_level = emp_dict.get('level_index') or emp_dict.get('job_level') or 1
+    job_level = emp_dict.get('level_index') or emp_dict.get('job_level')
     if job_level is None:
         job_level = 1
     job_level = int(job_level)
     
-    tenure_months = emp_dict.get('months_in_company') or emp_dict.get('tenure_months') or 12
+    tenure_months = emp_dict.get('months_in_company') or emp_dict.get('tenure_months')
     if tenure_months is None:
         tenure_months = 12
     tenure_months = int(tenure_months)
     
-    months_in_current_role = emp_dict.get('months_in_role') or 6
+    months_in_current_role = emp_dict.get('months_in_role')
     if months_in_current_role is None:
         months_in_current_role = 6
     months_in_current_role = int(months_in_current_role)
     
-    base_salary = emp_dict.get('base_salary') or 75000
+    base_salary = emp_dict.get('base_salary')
     if base_salary is None:
         base_salary = 75000
     base_salary = float(base_salary)
     
-    latest_performance_rating = emp_dict.get('performance_rating') or 3.0
+    latest_performance_rating = emp_dict.get('performance_rating')
     if latest_performance_rating is None:
         latest_performance_rating = 3.0
     latest_performance_rating = float(latest_performance_rating)
     
-    latest_goals_achievement = emp_dict.get('goals_achievement') or 75
+    latest_goals_achievement = emp_dict.get('goals_achievement')
     if latest_goals_achievement is None:
         latest_goals_achievement = 75
     latest_goals_achievement = float(latest_goals_achievement)
     
-    latest_competency_rating = emp_dict.get('competency_rating') or 3.0
+    latest_competency_rating = emp_dict.get('competency_rating')
     if latest_competency_rating is None:
         latest_competency_rating = 3.0
     latest_competency_rating = float(latest_competency_rating)
     
-    courses_completed = emp_dict.get('courses_completed') or 0
+    courses_completed = emp_dict.get('courses_completed')
     if courses_completed is None:
         courses_completed = 0
     courses_completed = int(courses_completed)
     
-    total_learning_hours = emp_dict.get('learning_hours') or 0
+    total_learning_hours = emp_dict.get('learning_hours')
     if total_learning_hours is None:
         total_learning_hours = 0
     total_learning_hours = float(total_learning_hours)
     
-    avg_learning_score = emp_dict.get('learning_score') or 70
+    avg_learning_score = emp_dict.get('learning_score')
     if avg_learning_score is None:
         avg_learning_score = 70
     avg_learning_score = float(avg_learning_score)
     
-    learning_categories_count = emp_dict.get('learning_categories') or 0
+    learning_categories_count = emp_dict.get('learning_categories')
     if learning_categories_count is None:
         learning_categories_count = 0
     learning_categories_count = int(learning_categories_count)
     
-    total_goals = emp_dict.get('total_goals') or 0
+    total_goals = emp_dict.get('total_goals')
     if total_goals is None:
         total_goals = 0
     total_goals = int(total_goals)
     
-    avg_goal_achievement = emp_dict.get('goal_achievement') or 75
+    avg_goal_achievement = emp_dict.get('goal_achievement')
     if avg_goal_achievement is None:
         avg_goal_achievement = 75
     avg_goal_achievement = float(avg_goal_achievement)
     
-    goals_exceeded = emp_dict.get('goals_exceeded') or 0
+    goals_exceeded = emp_dict.get('goals_exceeded')
     if goals_exceeded is None:
         goals_exceeded = 0
     goals_exceeded = int(goals_exceeded)
     
-    goal_types_count = emp_dict.get('goal_types') or 0
+    goal_types_count = emp_dict.get('goal_types')
     if goal_types_count is None:
         goal_types_count = 0
     goal_types_count = int(goal_types_count)
     
-    current_bonus_target = emp_dict.get('bonus_target') or 0
+    current_bonus_target = emp_dict.get('bonus_target')
     if current_bonus_target is None:
         current_bonus_target = 0
     current_bonus_target = float(current_bonus_target)
     
-    current_equity_value = emp_dict.get('equity_value') or 0
+    current_equity_value = emp_dict.get('equity_value')
     if current_equity_value is None:
         current_equity_value = 0
     current_equity_value = float(current_equity_value)
     
-    salary_growth_rate = emp_dict.get('salary_growth') or 0.0
+    salary_growth_rate = emp_dict.get('salary_growth')
     if salary_growth_rate is None:
         salary_growth_rate = 0.0
     salary_growth_rate = float(salary_growth_rate)
@@ -779,20 +780,33 @@ def ensure_dataframe_schema(features_df, model):
                 # Get current columns
                 current_cols = list(features_df.columns)
                 
-                # Remove extra columns that model doesn't expect
-                cols_to_keep = [col for col in expected_cols if col in current_cols]
-                features_df = features_df[cols_to_keep]
-                
-                # Add missing columns with 0.0
+                # Create a new DataFrame with columns in the exact order expected by the model
+                # First, ensure all expected columns exist (add missing ones with 0.0)
                 for col in expected_cols:
                     if col not in features_df.columns:
                         features_df[col] = 0.0
                 
-                # Reorder to match signature order exactly
+                # Remove any extra columns that model doesn't expect
+                cols_to_keep = [col for col in expected_cols if col in features_df.columns]
+                
+                # Reorder to match signature order exactly and keep only expected columns
                 features_df = features_df[expected_cols]
                 
+                # Ensure all values are numeric (convert if needed)
+                for col in expected_cols:
+                    if features_df[col].dtype == 'object':
+                        # Try to convert to numeric
+                        features_df[col] = pd.to_numeric(features_df[col], errors='coerce').fillna(0.0)
+                    elif features_df[col].dtype not in ['int64', 'float64', 'int32', 'float32']:
+                        # Convert to float for consistency
+                        features_df[col] = features_df[col].astype('float64')
+                
                 return features_df
-    except Exception:
+    except Exception as e:
+        # Log the error but don't fail - return DataFrame as-is
+        # This allows the code to continue even if schema enforcement fails
+        import warnings
+        warnings.warn(f"Schema enforcement failed: {str(e)[:100]}. Using DataFrame as-is.")
         pass  # If schema enforcement fails, return DataFrame as-is
     
     return features_df
@@ -1478,10 +1492,37 @@ def init_environment(catalog_name,schema_name, displayHTML, spark):
 
 
 def get_demo_employee_data(employees_df, displayHTML):
-    # Try to find our generated employee first
+    # Fix Alex's names if they're "Unknown" - update DataFrame first
+    # Check if Alex exists and has wrong names
+    alex_exists = employees_df.filter(F.col("employee_id") == '100038').count() > 0
+    if alex_exists:
+        # Update Alex's names if they're "Unknown" or None
+        employees_df = employees_df.withColumn(
+            "first_name",
+            F.when(
+                (F.col("employee_id") == '100038') & 
+                ((F.col("first_name") == "Unknown") | (F.col("first_name").isNull())),
+                F.lit("Alex")
+            ).otherwise(F.col("first_name"))
+        ).withColumn(
+            "last_name",
+            F.when(
+                (F.col("employee_id") == '100038') & 
+                ((F.col("last_name") == "Unknown") | (F.col("last_name").isNull())),
+                F.lit("Smith")
+            ).otherwise(F.col("last_name"))
+        )
+    
+    # Try to find Alex by employee_id first (most reliable)
     alex_data = employees_df.filter(
-        (F.col("first_name") == "Alex") & (F.col("last_name") == "Smith")
+        F.col("employee_id") == '100038'
     ).collect()
+
+    # If not found by ID, try by name
+    if not alex_data:
+        alex_data = employees_df.filter(
+            (F.col("first_name") == "Alex") & (F.col("last_name") == "Smith")
+        ).collect()
 
     # try to get example from our Success Factors DP
     if not alex_data:
@@ -1489,8 +1530,7 @@ def get_demo_employee_data(employees_df, displayHTML):
             F.col("employee_id") == '101002'
         ).collect()
 
-    # if still not found - just take a first one from the datasert
-
+    # if still not found - just take a first one from the dataset
     if not alex_data:
         alex_data = [employees_df.first()]
 
@@ -2153,6 +2193,7 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
     
     # Convert to DataFrame for batch prediction - ensure correct column order from model signature
     # Get expected column order from model signature if available
+    expected_cols = None
     try:
         from mlflow.pyfunc import PyFuncModel
         if reference_model and isinstance(reference_model, PyFuncModel):
@@ -2160,20 +2201,59 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
                 signature = reference_model.metadata.get_signature()
                 if signature and signature.inputs:
                     expected_cols = [inp.name for inp in signature.inputs.inputs]
-                    # Reorder all feature dicts to match expected column order
-                    ordered_features_list = []
-                    for feat_dict in employee_features_list:
-                        ordered_dict = {col: feat_dict.get(col, 0.0) for col in expected_cols}
-                        ordered_features_list.append(ordered_dict)
-                    employee_features_list = ordered_features_list
     except Exception:
-        pass  # If signature extraction fails, use original features
+        pass  # If signature extraction fails, we'll use all available columns
     
-    # Convert to DataFrame for batch prediction
-    features_df = pd.DataFrame(employee_features_list)
+    # Ensure all feature dictionaries have the same columns
+    if expected_cols:
+        # Use expected columns from model signature
+        all_cols = set(expected_cols)
+        # Add any columns that might be in the features but not in signature (shouldn't happen, but be safe)
+        for feat_dict in employee_features_list:
+            all_cols.update(feat_dict.keys())
+        
+        # Normalize all feature dictionaries to have the same columns
+        normalized_features_list = []
+        for feat_dict in employee_features_list:
+            normalized_dict = {}
+            # Add all expected columns first (in order)
+            for col in expected_cols:
+                normalized_dict[col] = feat_dict.get(col, 0.0)
+            # Add any extra columns (shouldn't happen if prepare_features_for_model works correctly)
+            for col in all_cols:
+                if col not in expected_cols:
+                    normalized_dict[col] = feat_dict.get(col, 0.0)
+            normalized_features_list.append(normalized_dict)
+        employee_features_list = normalized_features_list
+        
+        # Convert to DataFrame with explicit column order and ensure numeric types
+        features_df = pd.DataFrame(employee_features_list, columns=expected_cols)
+        # Ensure all columns are numeric (convert if needed)
+        for col in expected_cols:
+            if features_df[col].dtype == 'object':
+                features_df[col] = pd.to_numeric(features_df[col], errors='coerce').fillna(0.0)
+            # Ensure float64 for consistency with ML models
+            features_df[col] = features_df[col].astype('float64')
+    else:
+        # Fallback: use all columns from first feature dict
+        if employee_features_list:
+            all_cols = list(employee_features_list[0].keys())
+            # Ensure all dicts have same columns
+            normalized_features_list = []
+            for feat_dict in employee_features_list:
+                normalized_dict = {col: float(feat_dict.get(col, 0.0)) for col in all_cols}
+                normalized_features_list.append(normalized_dict)
+            employee_features_list = normalized_features_list
+            features_df = pd.DataFrame(employee_features_list, columns=all_cols)
+            # Ensure all columns are numeric
+            for col in all_cols:
+                features_df[col] = features_df[col].astype('float64')
+        else:
+            raise ValueError("❌ No features prepared for batch prediction.")
     
     # CRITICAL: Enforce exact schema match for batch predictions
-    #features_df = ensure_dataframe_schema(features_df, reference_model)
+    # This ensures columns are in the right order and types match
+    features_df = ensure_dataframe_schema(features_df, reference_model)
     
     # Get predictions from ML models
     print("   🤖 Running ML model predictions on batch...")
