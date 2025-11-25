@@ -833,14 +833,10 @@ def prepare_features_for_model(features_dict, model=None, spark=None, catalog_na
                 # Feature missing - this shouldn't happen, but set to 0.0 as safe default
                 filtered_features[feat] = 0.0
                 missing_in_all_features.append(feat)
-        if missing_in_all_features:
-            print(f"DEBUG prepare_features_for_model: {len(missing_in_all_features)} features missing from all_features: {missing_in_all_features[:10]}...")
-        print(f"DEBUG prepare_features_for_model: Returning {len(filtered_features)} features (signature has {len(expected_features_from_signature)})")
         return filtered_features
     
     # If no signature available, return all features (fallback)
     # This should not happen if models are properly registered with signatures
-    print(f"DEBUG prepare_features_for_model: No signature, returning all {len(all_features)} features")
     return all_features
 
 
@@ -2074,76 +2070,48 @@ def generate_career_predictions(employee_data,career_models,employees_df,display
             # This will extract the signature and filter to ONLY the expected features in correct order
             model_features = prepare_features_for_model(transition_features, career_models['career_success'], spark, catalog_name, schema_name)
             
-            # DEBUG: Check what prepare_features_for_model returned
-            print(f"DEBUG: model_features keys: {list(model_features.keys())[:20]}... (showing first 20)")
-            print(f"DEBUG: model_features has {len(model_features)} keys")
-            
             # CRITICAL: Get expected columns from model signature BEFORE creating DataFrame
             # This ensures we only create DataFrame with columns the model expects
             expected_cols_from_signature = None
             try:
                 from mlflow.pyfunc import PyFuncModel
-                print(f"DEBUG: Model type: {type(career_models['career_success'])}")
-                print(f"DEBUG: Is PyFuncModel: {isinstance(career_models['career_success'], PyFuncModel)}")
                 if isinstance(career_models['career_success'], PyFuncModel):
-                    print(f"DEBUG: Has metadata: {hasattr(career_models['career_success'], 'metadata')}")
                     if hasattr(career_models['career_success'], 'metadata') and career_models['career_success'].metadata:
                         # Try direct attribute first
                         if hasattr(career_models['career_success'].metadata, 'signature'):
                             signature = career_models['career_success'].metadata.signature
-                            print(f"DEBUG: Got signature via metadata.signature")
                         elif hasattr(career_models['career_success'].metadata, 'get_signature'):
                             try:
                                 signature = career_models['career_success'].metadata.get_signature()
-                                print(f"DEBUG: Got signature via metadata.get_signature()")
-                            except Exception as e2:
-                                print(f"DEBUG: get_signature() failed: {str(e2)[:100]}")
+                            except Exception:
                                 signature = None
                         else:
                             signature = None
-                            print(f"DEBUG: metadata has no signature attribute")
                         
-                        print(f"DEBUG: Signature extracted: {signature is not None}")
                         if signature:
                             if hasattr(signature, 'inputs') and signature.inputs:
                                 expected_cols_from_signature = [inp.name for inp in signature.inputs.inputs]
-                                print(f"DEBUG: expected_cols_from_signature has {len(expected_cols_from_signature)} columns")
-                                print(f"DEBUG: First 10 expected cols: {expected_cols_from_signature[:10]}")
-                            else:
-                                print(f"DEBUG: Signature has no inputs attribute")
-            except Exception as e:
-                print(f"DEBUG: Exception extracting signature: {str(e)[:200]}")
-                import traceback
-                print(f"DEBUG: Traceback: {traceback.format_exc()[:500]}")
+            except Exception:
                 pass
             
             # Create DataFrame with only expected columns from signature
             if expected_cols_from_signature:
                 # Ensure all expected columns exist in model_features, add missing ones with 0.0
-                missing_cols = []
                 for col in expected_cols_from_signature:
                     if col not in model_features:
                         model_features[col] = 0.0
-                        missing_cols.append(col)
-                if missing_cols:
-                    print(f"DEBUG: Added {len(missing_cols)} missing columns: {missing_cols[:10]}...")
                 
                 # Create DataFrame with ONLY expected columns in correct order
                 filtered_model_features = {col: model_features.get(col, 0.0) for col in expected_cols_from_signature}
                 features_df = pd.DataFrame([filtered_model_features], columns=expected_cols_from_signature)
-                print(f"DEBUG: Created DataFrame with {len(features_df.columns)} columns")
-                print(f"DEBUG: DataFrame columns: {list(features_df.columns)[:10]}...")
                 
                 # Ensure all columns are float64
                 for col in expected_cols_from_signature:
                     features_df[col] = pd.to_numeric(features_df[col], errors='coerce').fillna(0.0).astype('float64')
             else:
                 # Fallback: create DataFrame and let ensure_dataframe_schema handle it
-                print(f"DEBUG: No signature found, using fallback with ensure_dataframe_schema")
                 features_df = pd.DataFrame([model_features])
-                print(f"DEBUG: Before ensure_dataframe_schema: {len(features_df.columns)} columns")
                 features_df = ensure_dataframe_schema(features_df, career_models['career_success'])
-                print(f"DEBUG: After ensure_dataframe_schema: {len(features_df.columns)} columns")
             
             # Get ML model prediction
             success_pred = career_models['career_success'].predict(features_df)
@@ -2462,7 +2430,7 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
         ).limit(20).collect()
         print(f"   ✅ Selected {len(all_employees)} employees (any status)")
         if not all_employees:
-            # Debug: show what employment_status values exist
+            # Show what employment_status values exist
             try:
                 status_counts = employees_df.groupBy('employment_status').count().collect()
                 status_info = ', '.join([f"{row['employment_status']}: {row['count']}" for row in status_counts])
