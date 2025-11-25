@@ -825,8 +825,6 @@ def load_employees_from_data_product(generated_employees=None):
             "SELECT * FROM core_workforce_data_dp.coreworkforcedata.coreworkforce_standardfields"
         )
         
-        # Cache raw data product DataFrame to avoid re-reading from source
-        employees_df_raw.cache()
         
         record_count = employees_df_raw.count()
         print(f"✅ Successfully loaded {record_count:,} employee records from DATA PRODUCT")
@@ -997,8 +995,6 @@ def load_employees_from_data_product(generated_employees=None):
             get_last_name_udf(F.col("employee_id"))
         )
         
-        # Cache transformed employees DataFrame for reuse
-        employees_df.cache()
         
         final_count = employees_df.count()
         print(f"✅ Transformed employees data: {final_count:,} records")
@@ -1035,9 +1031,6 @@ def load_employees_from_data_product(generated_employees=None):
             F.col("last_name").alias("last_name")
         )
         
-        # Cache generated employees DataFrame for reuse
-        employees_df.cache()
-        
         final_count = employees_df.count()
         print(f"✅ Using generated employees data: {final_count:,} records")
         print(f"   📊 Final Status: Using GENERATED data (fallback)")
@@ -1063,8 +1056,6 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
             "SELECT * FROM performance_data_dp.performancedata.performancedata"
         )
         
-        # Cache raw data product DataFrame to avoid re-reading from source
-        performance_df_raw.cache()
         
         record_count = performance_df_raw.count()
         print(f"✅ Successfully loaded {record_count:,} performance records from DATA PRODUCT")
@@ -1110,8 +1101,6 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
             F.lit(COMPLETION_STATUS_COMPLETED).alias("status")
         ).filter(F.col("currentPerformanceRating").isNotNull() & (F.col("currentPerformanceRating") > 0))
         
-        # Cache transformed performance DataFrame for reuse
-        performance_df.cache()
         
         final_count = performance_df.count()
         print(f"✅ Transformed performance data: {final_count:,} records")
@@ -1162,9 +1151,6 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
             F.col("status").alias("status")
         )
         
-        # Cache generated performance DataFrame for reuse
-        performance_df.cache()
-        
         final_count = performance_df.count()
         print(f"✅ Using generated performance reviews data: {final_count:,} records")
         print(f"   📊 Final Status: Using GENERATED data (fallback)")
@@ -1187,14 +1173,12 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
         Spark DataFrame with learning records data (from DP or generated)
     """
     print("📊 Loading learning records from SAP SuccessFactors Data Product...")
-    print("   Source: learning_data_dp.learningdata.learninghistory")
+    print("   Source: learning_history_dp.learninghistory.learningcompletion")
     try:
         learning_df_raw = spark.sql(
-            "SELECT * FROM learning_data_dp.learningdata.learninghistory"
+            "SELECT * FROM learning_history_dp.learninghistory.learningcompletion"
         )
         
-        # Cache raw data product DataFrame to avoid re-reading from source
-        learning_df_raw.cache()
         
         record_count = learning_df_raw.count()
         print(f"✅ Successfully loaded {record_count:,} learning records from DATA PRODUCT")
@@ -1227,8 +1211,6 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
             F.coalesce(F.expr("try_cast(score as int)"), F.expr("try_cast(finalScore as int)")).alias("score")
         ).filter(F.col("userId").isNotNull())
         
-        # Cache transformed learning DataFrame for reuse
-        learning_df.cache()
         
         final_count = learning_df.count()
         print(f"✅ Transformed learning data: {final_count:,} records")
@@ -1305,8 +1287,6 @@ def load_learning_from_data_product(generated_learning_records=None, employees_d
             F.col("score").cast("integer").alias("score")
         )
         
-        # Cache generated learning DataFrame for reuse
-        learning_df.cache()
         
         final_count = learning_df.count()
         print(f"✅ Using generated learning records data: {final_count:,} records")
@@ -1423,8 +1403,7 @@ def load_or_generate_data():
     print("EMPLOYEES DATASET")
     print("="*80)
     employees_df, employees_source = load_employees_from_data_product(generated_employees=None)
-    # Cache employees DataFrame as it will be used multiple times (extraction, summary, saving)
-    employees_df.cache()
+
     data_sources['employees'] = employees_source
     
     # Prepare employees DataFrame for use in dependent datasets (adds computed date columns)
@@ -1449,8 +1428,7 @@ def load_or_generate_data():
         employees=employees_list_for_dependencies,
         employees_df=employees_df_for_dependencies  # Pass DataFrame for lazy collection
     )
-    # Cache performance DataFrame as it will be used multiple times (extraction, summary, saving)
-    performance_df.cache()
+
     data_sources['performance'] = performance_source
     
     # Keep performance reviews as DataFrame - will collect only if fallback generation is needed
@@ -1472,8 +1450,7 @@ def load_or_generate_data():
         performance_reviews_df=performance_reviews_df,  # Pass DataFrame instead of list
         performance_reviews_list=performance_reviews_list  # Keep for backward compatibility
     )
-    # Cache learning DataFrame as it will be used multiple times (summary, saving)
-    learning_df.cache()
+
     data_sources['learning'] = learning_source
     
     # Goals and Compensation - always use generated data (no data products available yet)
@@ -1556,8 +1533,6 @@ def load_or_generate_data():
     else:
         goals_df = spark.createDataFrame(goals_data)
     
-    # Cache goals DataFrame as it will be used multiple times (summary, saving)
-    goals_df.cache()
     
     if len(compensation_data) == 0:
         print("   ⚠️ Warning: No compensation records generated. Creating empty DataFrame with schema...")
@@ -1575,8 +1550,6 @@ def load_or_generate_data():
     else:
         compensation_df = spark.createDataFrame(compensation_data)
     
-    # Cache compensation DataFrame as it will be used multiple times (summary, saving)
-    compensation_df.cache()
     
     data_sources['goals'] = 'GENERATED'
     data_sources['compensation'] = 'GENERATED'
@@ -1584,22 +1557,27 @@ def load_or_generate_data():
     print(f"✅ Compensation: {compensation_df.count():,} records (Generated)")
     
     # Print summary
-    # Compute counts once and reuse (DataFrames are already cached)
+    # Compute counts once and reuse 
     print("\n" + "="*80)
     print("📊 DATA SOURCE SUMMARY")
     print("="*80)
     print("Dataset                    | Source          | Records")
     print("-" * 80)
-    employees_count = employees_df.count()
-    performance_count = performance_df.count()
-    learning_count = learning_df.count()
-    goals_count = goals_df.count()
-    compensation_count = compensation_df.count()
-    print(f"Employees                  | {data_sources['employees']:<15} | {employees_count:>10,}")
-    print(f"Performance Reviews         | {data_sources['performance']:<15} | {performance_count:>10,}")
-    print(f"Learning Records           | {data_sources['learning']:<15} | {learning_count:>10,}")
-    print(f"Goals                      | {data_sources['goals']:<15} | {goals_count:>10,}")
-    print(f"Compensation               | {data_sources['compensation']:<15} | {compensation_count:>10,}")
+
+
+    table_counts = {
+    'employees': employees_df.count(),
+    'performance': performance_df.count(),
+    'learning': learning_df.count(),
+    'goals': goals_df.count(),
+    'compensation': compensation_df.count()
+}
+    
+    print(f"Employees                  | {data_sources['employees']:<15} | {table_counts['employees']:>10,}")
+    print(f"Performance Reviews         | {data_sources['performance']:<15} | {table_counts['performance']:>10,}")
+    print(f"Learning Records           | {data_sources['learning']:<15} | {table_counts['learning']:>10,}")
+    print(f"Goals                      | {data_sources['goals']:<15} | {table_counts['goals']:>10,}")
+    print(f"Compensation               | {data_sources['compensation']:<15} | {table_counts['compensation']:>10,}")
     print("="*80)
     print("✅ All data loaded/generated successfully")
     print("="*80)
@@ -1610,11 +1588,11 @@ def load_or_generate_data():
         'learning': learning_df,
         'goals': goals_df,
         'compensation': compensation_df
-    }
+    }, table_counts
 
 
 # Load or generate all data
-dataframes = load_or_generate_data()
+dataframes, table_counts = load_or_generate_data()
 
 # COMMAND ----------
 
@@ -1654,40 +1632,22 @@ employees_df = employees_df.withColumn("age", F.coalesce(F.expr("try_cast(age as
                            .withColumn("first_name", F.coalesce(F.col("first_name"), F.lit("Unknown"))) \
                            .withColumn("last_name", F.coalesce(F.col("last_name"), F.lit("Unknown")))
 
-# Cache final transformed DataFrames before saving (they may be used multiple times)
-employees_df.cache()
-performance_df.cache()
-learning_df.cache()
-goals_df.cache()
-compensation_df.cache()
-
 # Save as Unity Catalog tables (Delta tables)
 table_names = {
     'employees': employees_df,
     'performance': performance_df,
-    'learning': learning_df,  # From SAP SuccessFactors Data Product (or generated if data product unavailable)
+    'learning': learning_df, 
     'goals': goals_df,
     'compensation': compensation_df
 }
 
-# Compute counts once before saving (DataFrames are already cached)
-table_counts = {
-    'employees': employees_df.count(),
-    'performance': performance_df.count(),
-    'learning': learning_df.count(),
-    'goals': goals_df.count(),
-    'compensation': compensation_df.count()
-}
-
 for table_name, df in table_names.items():
     full_table_name = f"{catalog_name}.{schema_name}.{table_name}"
-    # Use overwriteSchema to prevent schema merge conflicts
-    df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(full_table_name)
+    df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(full_table_name)
     print(f"✅ Created table: {full_table_name} ({table_counts[table_name]:,} rows)")
 
 print(f"\n✅ All data saved to Unity Catalog: {catalog_name}.{schema_name}")
 
-# Display summary (reuse cached counts)
 displayHTML(f"""
 <div style="background: linear-gradient(135deg, #0052CC 0%, #0070F2 100%); 
             padding: 25px; border-radius: 15px; color: white; margin: 20px 0;">
@@ -1725,4 +1685,3 @@ displayHTML(f"""
 
 print(f"\n🎉 Data generation complete! Tables available in {catalog_name}.{schema_name}")
 print("✅ Ready for ML model training in next notebook")
-
