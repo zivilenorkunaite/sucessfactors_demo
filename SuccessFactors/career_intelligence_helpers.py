@@ -2810,6 +2810,21 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
         
         # Categorize talent with distinct, non-overlapping categories
         # Priority: Readiness first, then potential, then performance
+        # 
+        # Category Definitions:
+        # 1. "Ready for Promotion": readiness >= 80 AND potential >= 75%
+        #    → Ready now with high growth potential (best candidates for advancement)
+        # 2. "High Potential": potential >= 75% AND readiness 70-79
+        #    → High future potential but needs more development before promotion
+        # 3. "Promotion Eligible": readiness >= 75 AND potential < 75%
+        #    → Ready for promotion but limited growth potential (steady performers)
+        # 4. "Top Performer": performance >= 4.0 AND engagement >= 80 AND readiness < 75
+        #    → Excellent current performance but not ready for promotion yet
+        # 5. "Developing": performance >= 3.5
+        #    → Solid performer, needs more time and development
+        # 6. "Needs Development": performance < 3.5
+        #    → Requires improvement before promotion consideration
+        
         if readiness_score >= 80 and potential_prob >= 0.75:
             # Highest tier: Both ready now AND high potential
             talent_category = 'Ready for Promotion'
@@ -2817,8 +2832,8 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
             # High potential with good readiness (but not quite ready yet)
             talent_category = 'High Potential'
         elif readiness_score >= 75:
-            # Ready now but lower potential (ready for promotion but limited growth)
-            talent_category = 'Ready Now'
+            # Ready now but lower potential (eligible for promotion but limited growth)
+            talent_category = 'Promotion Eligible'
         elif performance_rating >= 4.0 and engagement_score >= 80:
             # Strong performer but not yet ready/potential
             talent_category = 'Top Performer'
@@ -2901,7 +2916,7 @@ def discover_hidden_talent_with_ml(career_models, employees_df, spark, catalog_n
     target_count = 20
     
     # Priority order for categories (want to see these in visualization)
-    priority_categories = ['Ready for Promotion', 'Ready Now', 'High Potential', 'Top Performer', 'Developing', 'Needs Development']
+    priority_categories = ['Ready for Promotion', 'Promotion Eligible', 'High Potential', 'Top Performer', 'Developing', 'Needs Development']
     
     # Select top examples from each priority category
     for category in priority_categories:
