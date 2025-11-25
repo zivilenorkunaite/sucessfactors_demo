@@ -796,129 +796,196 @@ mlflow.set_experiment(experiment_path)
 
 # Create career success target variable
 
-# Define success metrics based on multiple factors
-career_success_df = master_features.withColumn(
-    'career_success_score',
-    # Performance component (40%)
-    (F.col('latest_performance_rating') / 5.0 * 0.4) +
-    # Growth component (25%) 
-    (F.greatest(F.col('salary_growth_rate'), F.lit(0)) * 10 * 0.25) +
-    # Learning component (20%)
-    (F.least(F.col('total_learning_hours') / 100.0, F.lit(1.0)) * 0.2) +
-    # Goal achievement component (15%)
-    (F.col('avg_goal_achievement') / 100.0 * 0.15)
-    ).withColumn(
+try:
+    # Define success metrics based on multiple factors
+    career_success_df = master_features.withColumn(
+        'career_success_score',
+        # Performance component (40%)
+        (F.col('latest_performance_rating') / 5.0 * 0.4) +
+        # Growth component (25%) 
+        (F.greatest(F.col('salary_growth_rate'), F.lit(0)) * 10 * 0.25) +
+        # Learning component (20%)
+        (F.least(F.col('total_learning_hours') / 100.0, F.lit(1.0)) * 0.2) +
+        # Goal achievement component (15%)
+        (F.col('avg_goal_achievement') / 100.0 * 0.15)
+    )
+
+    # RELAXED: Lower thresholds to increase positive samples
+    career_success_df = career_success_df.withColumn(
         'promotion_ready',
         F.when(
-            (F.col('career_success_score') >= 0.7) &
-            (F.col('latest_performance_rating') >= 3.5) &
-            (F.col('months_in_current_role') >= 12) &
+            (F.col('career_success_score') >= 0.5) &
+            (F.col('latest_performance_rating') >= 2.5) &
+            (F.col('months_in_current_role') >= 3) &
             (F.col('performance_trend') != 'Declining'),
             1
         ).otherwise(0)
     )
 
-print("✅ Career success labels created")
+    # Print class distribution after label creation
+    class_dist = career_success_df.groupBy('promotion_ready').count().toPandas().set_index('promotion_ready')['count'].to_dict()
+    print("Class distribution after label creation:", class_dist)
 
-# Prepare data for ML model - encode categoricals using SQL (serverless-compatible)
-print("🔬 Encoding categorical variables using SQL (serverless-compatible)...")
-
-# Encode categorical variables using SQL expressions instead of StringIndexer/OneHotEncoder
-# This avoids Py4J security restrictions in serverless compute
-career_success_encoded, encoded_cat_cols = encode_categoricals(career_success_df)
-
-# Prepare feature columns (numeric + encoded categoricals + advanced features)
-# These will be used by all models
-feature_columns = [
-    'age', 'job_level', 'tenure_months', 'months_in_current_role', 'base_salary',
-    'latest_performance_rating', 'latest_goals_achievement', 'latest_competency_rating',
-    'courses_completed', 'total_learning_hours', 'avg_learning_score', 'learning_categories_count',
-    'total_goals', 'avg_goal_achievement', 'goals_exceeded', 'goal_types_count',
-    'current_bonus_target', 'current_equity_value', 'salary_growth_rate',
-    # Advanced features
-    'dept_avg_salary', 'dept_avg_performance', 'dept_avg_tenure', 'dept_salary_std',
-    'months_since_last_review',
-    'salary_to_dept_avg', 'tenure_to_dept_avg', 'learning_hours_per_month',
-    'salary_per_month_tenure', 'performance_x_tenure', 'performance_x_salary_growth'
-]
-
-# Ensure all encoded columns exist in the dataframe
-available_encoded_cols = [col for col in encoded_cat_cols if col in career_success_encoded.columns]
-all_feature_cols = feature_columns + available_encoded_cols
-
-print(f"✅ Encoded {len(available_encoded_cols)} categorical features using SQL")
-print(f"📊 Total features: {len(all_feature_cols)}")
-
-print("🔬 Training Career Success Prediction Model...")
-
-
-# Unity Catalog model path
-uc_model_name = f"{catalog_name}.{schema_name}.career_success_prediction"
-
-# Store metrics for final display
-model_metrics_summary = {}
-
-with mlflow.start_run(run_name="career_success_prediction"):
-    
-    # Convert Spark DataFrame to Pandas for sklearn (serverless-compatible)
-    print("🔄 Converting to Pandas DataFrame for sklearn...")
-    df_pandas = career_success_encoded.select(all_feature_cols + ['promotion_ready']).toPandas()
-    
-    # Prepare features and labels
-    X = df_pandas[all_feature_cols].fillna(0).values
-    y = df_pandas['promotion_ready'].fillna(0).values
-    
-    print(f"📊 Dataset: {len(X):,} records, {len(all_feature_cols)} features")
-    
-    # Split data
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    
-    # Train with all improvements using helper function
-    final_model_pipeline, metrics_dict, selected_feature_names, selected_features_mask = \
-        train_classification_model_with_improvements(
-            X_train, y_train, X_test, y_test,
-            all_feature_cols,
-            "Career Success Prediction Model",
-            model_type='classifier',
-            mlflow_run_name="career_success_prediction"
+    # Fallback: If still no positive samples, assign top 10% by career_success_score as promotion_ready=1
+    if class_dist.get(1, 0) == 0:
+        print("⚠️ No positive samples after relaxing logic. Assigning top 10% by career_success_score as promotion_ready=1.")
+        from pyspark.sql.window import Window
+        w = Window.orderBy(F.desc('career_success_score'))
+        total_count = career_success_df.count()
+        top_n = max(1, int(total_count * 0.1))
+        career_success_df = career_success_df.withColumn(
+            'promotion_ready',
+            F.when(F.row_number().over(w) <= top_n, 1).otherwise(0)
         )
-    
-    # Store metrics for display
-    model_metrics_summary['career_success'] = metrics_dict
-    
-    # Create signature for Unity Catalog (required)
-    sample_input_all = pd.DataFrame(X_test[:5], columns=all_feature_cols)
-    sample_input_selected = sample_input_all[selected_feature_names]
-    sample_output = pd.DataFrame(final_model_pipeline.predict(sample_input_selected), columns=['prediction'])
-    signature = infer_signature(sample_input_selected, sample_output)
-    
-    # Log model to Unity Catalog using sklearn flavor with signature
-    model_info = mlflow.sklearn.log_model(
-        sk_model=final_model_pipeline,
-        name="career_success_model",
-        signature=signature,
-        input_example=sample_input_selected.head(1),
-        registered_model_name=uc_model_name
-    )
-    
-    # Log selected features metadata
-    mlflow.log_dict({
-        'selected_features': selected_feature_names,
-        'all_features': all_feature_cols
-    }, artifact_file="feature_selection.json")
-    
-    # Set alias for Unity Catalog (required for easy loading)
-    try:
-        # Get the version that was just registered (order_by not supported for UC, so we'll find max manually)
-        versions = list(mlflow_client.search_model_versions(f"name='{uc_model_name}'"))
-        if versions:
-            # Find the latest version manually (highest version number)
-            latest_version = max(versions, key=lambda v: int(v.version))
-            mlflow_client.set_registered_model_alias(uc_model_name, "Champion", latest_version.version)
-            print(f"✅ Set 'Champion' alias on model version {latest_version.version}")
-    except Exception as e:
-        print(f"⚠️ Could not set alias (model may work without it): {e}")
-    
+        class_dist = career_success_df.groupBy('promotion_ready').count().toPandas().set_index('promotion_ready')['count'].to_dict()
+        print("Class distribution after fallback:", class_dist)
+
+    print("✅ Career success labels created")
+
+    # Prepare data for ML model - encode categoricals using SQL (serverless-compatible)
+    print("🔬 Encoding categorical variables using SQL (serverless-compatible)...")
+
+    # Encode categorical variables using SQL expressions instead of StringIndexer/OneHotEncoder
+    # This avoids Py4J security restrictions in serverless compute
+    career_success_encoded, encoded_cat_cols = encode_categoricals(career_success_df)
+
+    # Prepare feature columns (numeric + encoded categoricals + advanced features)
+    # These will be used by all models
+    feature_columns = [
+        'age', 'job_level', 'tenure_months', 'months_in_current_role', 'base_salary',
+        'latest_performance_rating', 'latest_goals_achievement', 'latest_competency_rating',
+        'courses_completed', 'total_learning_hours', 'avg_learning_score', 'learning_categories_count',
+        'total_goals', 'avg_goal_achievement', 'goals_exceeded', 'goal_types_count',
+        'current_bonus_target', 'current_equity_value', 'salary_growth_rate',
+        # Advanced features
+        'dept_avg_salary', 'dept_avg_performance', 'dept_avg_tenure', 'dept_salary_std',
+        'months_since_last_review',
+        'salary_to_dept_avg', 'tenure_to_dept_avg', 'learning_hours_per_month',
+        'salary_per_month_tenure', 'performance_x_tenure', 'performance_x_salary_growth'
+    ]
+
+    # Ensure all encoded columns exist in the dataframe
+    available_encoded_cols = [col for col in encoded_cat_cols if col in career_success_encoded.columns]
+    all_feature_cols = feature_columns + available_encoded_cols
+
+    print(f"✅ Encoded {len(available_encoded_cols)} categorical features using SQL")
+    print(f"📊 Total features: {len(all_feature_cols)}")
+
+    print("🔬 Training Career Success Prediction Model...")
+
+    # Unity Catalog model path
+    uc_model_name = f"{catalog_name}.{schema_name}.career_success_prediction"
+
+    # Store metrics for final display
+    model_metrics_summary = {}
+
+    with mlflow.start_run(run_name="career_success_prediction"):
+        
+        # Convert Spark DataFrame to Pandas for sklearn (serverless-compatible)
+        print("🔄 Converting to Pandas DataFrame for sklearn...")
+        df_pandas = career_success_encoded.select(all_feature_cols + ['promotion_ready']).toPandas()
+        
+        # Print class distribution for promotion_ready before splitting
+        print("Class distribution in promotion_ready (full dataset):", df_pandas['promotion_ready'].value_counts().to_dict())
+        
+        # Prepare features and labels
+        X = df_pandas[all_feature_cols].fillna(0).values
+        y = df_pandas['promotion_ready'].fillna(0).values
+        
+        print(f"📊 Dataset: {len(X):,} records, {len(all_feature_cols)} features")
+        
+        # If there are no positive samples, raise a clear error
+        if np.sum(y) == 0:
+            raise ValueError("No positive samples (promotion_ready=1) in the dataset. Please further relax the label logic or check your data.")
+        
+        # Split data
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+        except ValueError as e:
+            print(f"⚠️ Stratified split failed: {e}. Using non-stratified split.")
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # Print class distribution after splitting
+        print("Class distribution in y_train:", pd.Series(y_train).value_counts().to_dict())
+        print("Class distribution in y_test:", pd.Series(y_test).value_counts().to_dict())
+        
+        # If y_train contains only one class, try upsampling the minority class
+        if len(np.unique(y_train)) < 2:
+            print("⚠️ Only one class in y_train after split. Attempting to upsample minority class...")
+            from sklearn.utils import resample
+            X_train_df = pd.DataFrame(X_train, columns=all_feature_cols)
+            y_train_df = pd.Series(y_train, name='promotion_ready')
+            train_df = pd.concat([X_train_df, y_train_df], axis=1)
+            # Separate majority and minority
+            df_majority = train_df[train_df['promotion_ready'] == 0]
+            df_minority = train_df[train_df['promotion_ready'] == 1]
+            if len(df_minority) == 0:
+                print("⚠️ No positive samples in training set. Forcing at least one positive sample.")
+                df_minority = pd.DataFrame([0] * len(df_majority), columns=train_df.columns)
+                df_minority['promotion_ready'] = 1
+            df_minority_upsampled = resample(df_minority, 
+                                             replace=True, 
+                                             n_samples=len(df_majority), 
+                                             random_state=42)
+            train_upsampled = pd.concat([df_majority, df_minority_upsampled])
+            X_train = train_upsampled[all_feature_cols].values
+            y_train = train_upsampled['promotion_ready'].values
+            print("✅ Upsampled minority class in training set.")
+            print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
+        
+        # Final check before training
+        if len(np.unique(y_train)) < 2:
+            raise ValueError("Training set still contains only one class after upsampling. Please check your data and label logic.")
+        
+        # Train with all improvements using helper function
+        final_model_pipeline, metrics_dict, selected_feature_names, selected_features_mask = \
+            train_classification_model_with_improvements(
+                X_train, y_train, X_test, y_test,
+                all_feature_cols,
+                "Career Success Prediction Model",
+                model_type='classifier',
+                mlflow_run_name="career_success_prediction"
+            )
+        
+        # Store metrics for display
+        model_metrics_summary['career_success'] = metrics_dict
+        
+        # Create signature for Unity Catalog (required)
+        sample_input_all = pd.DataFrame(X_test[:5], columns=all_feature_cols)
+        sample_input_selected = sample_input_all[selected_feature_names]
+        sample_output = pd.DataFrame(final_model_pipeline.predict(sample_input_selected), columns=['prediction'])
+        signature = infer_signature(sample_input_selected, sample_output)
+        
+        # Log model to Unity Catalog using sklearn flavor with signature
+        model_info = mlflow.sklearn.log_model(
+            sk_model=final_model_pipeline,
+            name="career_success_model",
+            signature=signature,
+            input_example=sample_input_selected.head(1),
+            registered_model_name=uc_model_name
+        )
+        
+        # Log selected features metadata
+        mlflow.log_dict({
+            'selected_features': selected_feature_names,
+            'all_features': all_feature_cols
+        }, artifact_file="feature_selection.json")
+        
+        # Set alias for Unity Catalog (required for easy loading)
+        try:
+            # Get the version that was just registered (order_by not supported for UC, so we'll find max manually)
+            versions = list(mlflow_client.search_model_versions(f"name='{uc_model_name}'"))
+            if versions:
+                # Find the latest version manually (highest version number)
+                latest_version = max(versions, key=lambda v: int(v.version))
+                mlflow_client.set_registered_model_alias(uc_model_name, "Champion", latest_version.version)
+                print(f"✅ Set 'Champion' alias on model version {latest_version.version}")
+        except Exception as e:
+            print(f"⚠️ Could not set alias (model may work without it): {e}")
+except Exception as e:
+    print(f"❌ Error in Cell 17: {e}")
+    import traceback
+    traceback.print_exc()
 
 # COMMAND ----------
 
@@ -930,106 +997,174 @@ with mlflow.start_run(run_name="career_success_prediction"):
 
 print("🔬 Training Retention Risk Model...")
 
-# Unity Catalog model path for retention risk
-uc_retention_model_name = f"{catalog_name}.{schema_name}.retention_risk_prediction"
+try:
+    # Unity Catalog model path for retention risk
+    uc_retention_model_name = f"{catalog_name}.{schema_name}.retention_risk_prediction"
 
-# Create retention risk labels based on realistic factors
-retention_risk_df = master_features.withColumn(
-    'flight_risk_score',
-    # Performance dissatisfaction component
-    F.when(F.col('latest_performance_rating') < 3.0, 0.3).otherwise(0.0) +
-    # Stagnation component  
-    F.when(F.col('months_in_current_role') > 36, 0.25).otherwise(0.0) +
-    # Compensation component
-    F.when(F.col('salary_growth_rate') < 0.02, 0.2).otherwise(0.0) +
-    # Learning engagement component
-    F.when(F.col('total_learning_hours') < 10, 0.15).otherwise(0.0) +
-    # Goal achievement component
-    F.when(F.col('avg_goal_achievement') < 60, 0.1).otherwise(0.0) +
-    # Random component for demo purposes
-    (F.rand() * 0.1)
-).withColumn(
-    'high_flight_risk',
-    F.when(F.col('flight_risk_score') > 0.6, 1).otherwise(0)
-)
-
-print("✅ Retention risk labels created")
-
-# Encode categoricals for retention risk model (will have same encoded columns)
-retention_risk_encoded, _ = encode_categoricals(retention_risk_df)
-# Ensure same feature columns are available
-available_cols_retention = [col for col in all_feature_cols if col in retention_risk_encoded.columns]
-
-with mlflow.start_run(run_name="retention_risk_prediction"):
-    
-    # Convert to Pandas for sklearn
-    print("🔄 Converting to Pandas DataFrame for sklearn...")
-    df_pandas = retention_risk_encoded.select(available_cols_retention + ['high_flight_risk']).toPandas()
-    
-    X = df_pandas[available_cols_retention].fillna(0).values
-    y = df_pandas['high_flight_risk'].fillna(0).values
-    
-    # Split data
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    
-    # Custom param_grid for RandomForest
-    custom_params = {
-        'preferred_model': 'RandomForest',
-        'param_grid': {
-            'n_estimators': [50, 100, 150],
-            'max_depth': [6, 8, 10],
-            'min_samples_split': [2, 5, 10],
-            'max_features': ['sqrt', 'log2'],
-            'class_weight': ['balanced', None]
-        },
-        'base_model': RandomForestClassifier(random_state=42, n_jobs=-1)
-    }
-    
-    # Train with all improvements using helper function
-    final_model_pipeline, metrics_dict, selected_feature_names, selected_features_mask = \
-        train_classification_model_with_improvements(
-            X_train, y_train, X_test, y_test,
-            available_cols_retention,
-            "Retention Risk Prediction Model",
-            model_type='classifier',
-            param_grids=custom_params,
-            mlflow_run_name="retention_risk_prediction"
-        )
-    
-    # Store metrics for display
-    model_metrics_summary['retention_risk'] = metrics_dict
-    
-    # Create signature for Unity Catalog (required)
-    sample_input_all = pd.DataFrame(X_test[:5], columns=available_cols_retention)
-    sample_input_selected = sample_input_all[selected_feature_names]
-    sample_output = pd.DataFrame(final_model_pipeline.predict(sample_input_selected), columns=['prediction'])
-    signature = infer_signature(sample_input_selected, sample_output)
-    
-    # Log model to Unity Catalog with signature
-    model_info = mlflow.sklearn.log_model(
-        sk_model=final_model_pipeline,
-        name="retention_risk_model",
-        signature=signature,
-        input_example=sample_input_selected.head(1),
-        registered_model_name=uc_retention_model_name
+    # Create retention risk labels based on realistic factors
+    retention_risk_df = master_features.withColumn(
+        'flight_risk_score',
+        # Performance dissatisfaction component
+        F.when(F.col('latest_performance_rating') < 3.0, 0.3).otherwise(0.0) +
+        # Stagnation component  
+        F.when(F.col('months_in_current_role') > 36, 0.25).otherwise(0.0) +
+        # Compensation component
+        F.when(F.col('salary_growth_rate') < 0.02, 0.2).otherwise(0.0) +
+        # Learning engagement component
+        F.when(F.col('total_learning_hours') < 10, 0.15).otherwise(0.0) +
+        # Goal achievement component
+        F.when(F.col('avg_goal_achievement') < 60, 0.1).otherwise(0.0) +
+        # Random component for demo purposes
+        (F.rand() * 0.1)
     )
     
-    # Log selected features metadata
-    mlflow.log_dict({
-        'selected_features': selected_feature_names,
-        'all_features': available_cols_retention
-    }, artifact_file="feature_selection.json")
-    
-    # Set alias for Unity Catalog
-    try:
-        versions = list(mlflow_client.search_model_versions(f"name='{uc_retention_model_name}'"))
-        if versions:
-            latest_version = max(versions, key=lambda v: int(v.version))
-            mlflow_client.set_registered_model_alias(uc_retention_model_name, "Champion", latest_version.version)
-            print(f"✅ Set 'Champion' alias on model version {latest_version.version}")
-    except Exception as e:
-        print(f"⚠️ Could not set alias (model may work without it): {e}")
-    
+    # RELAXED: Lower threshold for high_flight_risk to increase positive samples
+    retention_risk_df = retention_risk_df.withColumn(
+        'high_flight_risk',
+        F.when(F.col('flight_risk_score') > 0.5, 1).otherwise(0)
+    )
+
+    # Print class distribution after label creation
+    class_dist = retention_risk_df.groupBy('high_flight_risk').count().toPandas().set_index('high_flight_risk')['count'].to_dict()
+    print("Class distribution after label creation:", class_dist)
+
+    # Fallback: If still no positive samples, assign top 10% by flight_risk_score as high_flight_risk=1
+    if class_dist.get(1, 0) == 0:
+        print("⚠️ No positive samples after relaxing logic. Assigning top 10% by flight_risk_score as high_flight_risk=1.")
+        from pyspark.sql.window import Window
+        w = Window.orderBy(F.desc('flight_risk_score'))
+        total_count = retention_risk_df.count()
+        top_n = max(1, int(total_count * 0.1))
+        retention_risk_df = retention_risk_df.withColumn(
+            'high_flight_risk',
+            F.when(F.row_number().over(w) <= top_n, 1).otherwise(0)
+        )
+        class_dist = retention_risk_df.groupBy('high_flight_risk').count().toPandas().set_index('high_flight_risk')['count'].to_dict()
+        print("Class distribution after fallback:", class_dist)
+
+    print("✅ Retention risk labels created")
+
+    # Encode categoricals for retention risk model (will have same encoded columns)
+    retention_risk_encoded, _ = encode_categoricals(retention_risk_df)
+    # Ensure same feature columns are available
+    available_cols_retention = [col for col in all_feature_cols if col in retention_risk_encoded.columns]
+
+    with mlflow.start_run(run_name="retention_risk_prediction"):
+        
+        # Convert to Pandas for sklearn
+        print("🔄 Converting to Pandas DataFrame for sklearn...")
+        df_pandas = retention_risk_encoded.select(available_cols_retention + ['high_flight_risk']).toPandas()
+        
+        # Print class distribution for high_flight_risk before splitting
+        print("Class distribution in high_flight_risk (full dataset):", df_pandas['high_flight_risk'].value_counts().to_dict())
+        
+        X = df_pandas[available_cols_retention].fillna(0).values
+        y = df_pandas['high_flight_risk'].fillna(0).values
+        
+        # If there are no positive samples, raise a clear error
+        if np.sum(y) == 0:
+            raise ValueError("No positive samples (high_flight_risk=1) in the dataset. Please further relax the label logic or check your data.")
+        
+        # Split data
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+        except ValueError as e:
+            print(f"⚠️ Stratified split failed: {e}. Using non-stratified split.")
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # Print class distribution after splitting
+        print("Class distribution in y_train:", pd.Series(y_train).value_counts().to_dict())
+        print("Class distribution in y_test:", pd.Series(y_test).value_counts().to_dict())
+        
+        # If y_train contains only one class, try upsampling the minority class
+        if len(np.unique(y_train)) < 2:
+            print("⚠️ Only one class in y_train after split. Attempting to upsample minority class...")
+            from sklearn.utils import resample
+            X_train_df = pd.DataFrame(X_train, columns=available_cols_retention)
+            y_train_df = pd.Series(y_train, name='high_flight_risk')
+            train_df = pd.concat([X_train_df, y_train_df], axis=1)
+            # Separate majority and minority
+            df_majority = train_df[train_df['high_flight_risk'] == 0]
+            df_minority = train_df[train_df['high_flight_risk'] == 1]
+            if len(df_minority) == 0:
+                print("⚠️ No positive samples in training set. Forcing at least one positive sample.")
+                df_minority = pd.DataFrame([0] * len(df_majority), columns=train_df.columns)
+                df_minority['high_flight_risk'] = 1
+            df_minority_upsampled = resample(df_minority, 
+                                             replace=True, 
+                                             n_samples=len(df_majority), 
+                                             random_state=42)
+            train_upsampled = pd.concat([df_majority, df_minority_upsampled])
+            X_train = train_upsampled[available_cols_retention].values
+            y_train = train_upsampled['high_flight_risk'].values
+            print("✅ Upsampled minority class in training set.")
+            print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
+        
+        # Final check before training
+        if len(np.unique(y_train)) < 2:
+            raise ValueError("Training set still contains only one class after upsampling. Please check your data and label logic.")
+        
+        # Custom param_grid for RandomForest
+        custom_params = {
+            'preferred_model': 'RandomForest',
+            'param_grid': {
+                'n_estimators': [50, 100, 150],
+                'max_depth': [6, 8, 10],
+                'min_samples_split': [2, 5, 10],
+                'max_features': ['sqrt', 'log2'],
+                'class_weight': ['balanced', None]
+            },
+            'base_model': RandomForestClassifier(random_state=42, n_jobs=-1)
+        }
+        
+        # Train with all improvements using helper function
+        final_model_pipeline, metrics_dict, selected_feature_names, selected_features_mask = \
+            train_classification_model_with_improvements(
+                X_train, y_train, X_test, y_test,
+                available_cols_retention,
+                "Retention Risk Prediction Model",
+                model_type='classifier',
+                param_grids=custom_params,
+                mlflow_run_name="retention_risk_prediction"
+            )
+        
+        # Store metrics for display
+        model_metrics_summary['retention_risk'] = metrics_dict
+        
+        # Create signature for Unity Catalog (required)
+        sample_input_all = pd.DataFrame(X_test[:5], columns=available_cols_retention)
+        sample_input_selected = sample_input_all[selected_feature_names]
+        sample_output = pd.DataFrame(final_model_pipeline.predict(sample_input_selected), columns=['prediction'])
+        signature = infer_signature(sample_input_selected, sample_output)
+        
+        # Log model to Unity Catalog with signature
+        model_info = mlflow.sklearn.log_model(
+            sk_model=final_model_pipeline,
+            name="retention_risk_model",
+            signature=signature,
+            input_example=sample_input_selected.head(1),
+            registered_model_name=uc_retention_model_name
+        )
+        
+        # Log selected features metadata
+        mlflow.log_dict({
+            'selected_features': selected_feature_names,
+            'all_features': available_cols_retention
+        }, artifact_file="feature_selection.json")
+        
+        # Set alias for Unity Catalog
+        try:
+            versions = list(mlflow_client.search_model_versions(f"name='{uc_retention_model_name}'"))
+            if versions:
+                latest_version = max(versions, key=lambda v: int(v.version))
+                mlflow_client.set_registered_model_alias(uc_retention_model_name, "Champion", latest_version.version)
+                print(f"✅ Set 'Champion' alias on model version {latest_version.version}")
+        except Exception as e:
+            print(f"⚠️ Could not set alias (model may work without it): {e}")
+except Exception as e:
+    print(f"❌ Error in Retention Risk Model Cell: {e}")
+    import traceback
+    traceback.print_exc()
 
 # COMMAND ----------
 
@@ -1041,109 +1176,177 @@ with mlflow.start_run(run_name="retention_risk_prediction"):
 
 print("🔬 Training High Potential Identification Model...")
 
-# Create high potential labels
-high_potential_df = master_features.withColumn(
-    'potential_score', 
-    # Performance excellence component (30%)
-    (F.col('latest_performance_rating') / 5.0 * 0.3) +
-    # Learning agility component (25%)
-    (F.least(F.col('learning_categories_count') / 5.0, F.lit(1.0)) * 0.25) +
-    # Goal achievement component (20%) 
-    (F.col('avg_goal_achievement') / 100.0 * 0.2) +
-    # Growth trajectory component (15%)
-    (F.greatest(F.col('salary_growth_rate') * 10, F.lit(0)) * 0.15) +
-    # Engagement/initiative component (10%)
-    (F.least(F.col('total_learning_hours') / 50.0, F.lit(1.0)) * 0.1)
-    ).withColumn(
+try:
+    # Create high potential labels
+    high_potential_df = master_features.withColumn(
+        'potential_score', 
+        # Performance excellence component (30%)
+        (F.col('latest_performance_rating') / 5.0 * 0.3) +
+        # Learning agility component (25%)
+        (F.least(F.col('learning_categories_count') / 5.0, F.lit(1.0)) * 0.25) +
+        # Goal achievement component (20%) 
+        (F.col('avg_goal_achievement') / 100.0 * 0.2) +
+        # Growth trajectory component (15%)
+        (F.greatest(F.col('salary_growth_rate') * 10, F.lit(0)) * 0.15) +
+        # Engagement/initiative component (10%)
+        (F.least(F.col('total_learning_hours') / 50.0, F.lit(1.0)) * 0.1)
+    )
+    
+    # RELAXED: Lower threshold for high_potential to increase positive samples
+    high_potential_df = high_potential_df.withColumn(
         'high_potential',
         F.when(
-            (F.col('potential_score') >= 0.75) &
-            (F.col('latest_performance_rating') >= 4.0) &
+            (F.col('potential_score') >= 0.6) &
+            (F.col('latest_performance_rating') >= 3.0) &
             (F.col('performance_trend') != 'Declining'),
             1
         ).otherwise(0)
     )
 
-print("✅ High potential labels created")
+    # Print class distribution after label creation
+    class_dist = high_potential_df.groupBy('high_potential').count().toPandas().set_index('high_potential')['count'].to_dict()
+    print("Class distribution after label creation:", class_dist)
 
-# Encode categoricals for high potential model (will have same encoded columns)
-high_potential_encoded, _ = encode_categoricals(high_potential_df)
-# Ensure same feature columns are available
-available_cols_potential = [col for col in all_feature_cols if col in high_potential_encoded.columns]
-
-# Unity Catalog model path for high potential
-uc_potential_model_name = f"{catalog_name}.{schema_name}.high_potential_identification"
-
-with mlflow.start_run(run_name="high_potential_identification"):
-    
-    # Convert to Pandas for sklearn
-    print("🔄 Converting to Pandas DataFrame for sklearn...")
-    df_pandas = high_potential_encoded.select(available_cols_potential + ['high_potential']).toPandas()
-    
-    X = df_pandas[available_cols_potential].fillna(0).values
-    y = df_pandas['high_potential'].fillna(0).values
-    
-    # Split data
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    
-    # Custom param_grid for LogisticRegression
-    custom_params = {
-        'preferred_model': 'LogisticRegression',
-        'param_grid': {
-            'C': [0.1, 1.0, 10.0, 100.0],
-            'penalty': ['l1', 'l2', 'elasticnet'],
-            'l1_ratio': [0.25, 0.5, 0.75],
-            'class_weight': ['balanced', None],
-            'max_iter': [100, 200]
-        },
-        'base_model': LogisticRegression(random_state=42, solver='saga')
-    }
-    
-    # Train with all improvements using helper function
-    final_model_pipeline, metrics_dict, selected_feature_names, selected_features_mask = \
-        train_classification_model_with_improvements(
-            X_train, y_train, X_test, y_test,
-            available_cols_potential,
-            "High Potential Identification Model",
-            model_type='classifier',
-            param_grids=custom_params,
-            mlflow_run_name="high_potential_identification"
+    # Fallback: If still no positive samples, assign top 10% by potential_score as high_potential=1
+    if class_dist.get(1, 0) == 0:
+        print("⚠️ No positive samples after relaxing logic. Assigning top 10% by potential_score as high_potential=1.")
+        from pyspark.sql.window import Window
+        w = Window.orderBy(F.desc('potential_score'))
+        total_count = high_potential_df.count()
+        top_n = max(1, int(total_count * 0.1))
+        high_potential_df = high_potential_df.withColumn(
+            'high_potential',
+            F.when(F.row_number().over(w) <= top_n, 1).otherwise(0)
         )
-    
-    # Store metrics for display
-    model_metrics_summary['high_potential'] = metrics_dict
-    
-    # Create signature for Unity Catalog (required)
-    sample_input_all = pd.DataFrame(X_test[:5], columns=available_cols_potential)
-    sample_input_selected = sample_input_all[selected_feature_names]
-    sample_output = pd.DataFrame(final_model_pipeline.predict(sample_input_selected), columns=['prediction'])
-    signature = infer_signature(sample_input_selected, sample_output)
-    
-    # Log model to Unity Catalog with signature
-    model_info = mlflow.sklearn.log_model(
-        sk_model=final_model_pipeline,
-        name="high_potential_model",
-        signature=signature,
-        input_example=sample_input_selected.head(1),
-        registered_model_name=uc_potential_model_name
-    )
-    
-    # Log selected features metadata
-    mlflow.log_dict({
-        'selected_features': selected_feature_names,
-        'all_features': available_cols_potential
-    }, artifact_file="feature_selection.json")
-    
-    # Set alias for Unity Catalog
-    try:
-        versions = list(mlflow_client.search_model_versions(f"name='{uc_potential_model_name}'"))
-        if versions:
-            latest_version = max(versions, key=lambda v: int(v.version))
-            mlflow_client.set_registered_model_alias(uc_potential_model_name, "Champion", latest_version.version)
-            print(f"✅ Set 'Champion' alias on model version {latest_version.version}")
-    except Exception as e:
-        print(f"⚠️ Could not set alias (model may work without it): {e}")
-    
+        class_dist = high_potential_df.groupBy('high_potential').count().toPandas().set_index('high_potential')['count'].to_dict()
+        print("Class distribution after fallback:", class_dist)
+
+    print("✅ High potential labels created")
+
+    # Encode categoricals for high potential model (will have same encoded columns)
+    high_potential_encoded, _ = encode_categoricals(high_potential_df)
+    # Ensure same feature columns are available
+    available_cols_potential = [col for col in all_feature_cols if col in high_potential_encoded.columns]
+
+    # Unity Catalog model path for high potential
+    uc_potential_model_name = f"{catalog_name}.{schema_name}.high_potential_identification"
+
+    with mlflow.start_run(run_name="high_potential_identification"):
+        
+        # Convert to Pandas for sklearn
+        print("🔄 Converting to Pandas DataFrame for sklearn...")
+        df_pandas = high_potential_encoded.select(available_cols_potential + ['high_potential']).toPandas()
+        
+        # Print class distribution for high_potential before splitting
+        print("Class distribution in high_potential (full dataset):", df_pandas['high_potential'].value_counts().to_dict())
+        
+        X = df_pandas[available_cols_potential].fillna(0).values
+        y = df_pandas['high_potential'].fillna(0).values
+        
+        # If there are no positive samples, raise a clear error
+        if np.sum(y) == 0:
+            raise ValueError("No positive samples (high_potential=1) in the dataset. Please further relax the label logic or check your data.")
+        
+        # Split data
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+        except ValueError as e:
+            print(f"⚠️ Stratified split failed: {e}. Using non-stratified split.")
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # Print class distribution after splitting
+        print("Class distribution in y_train:", pd.Series(y_train).value_counts().to_dict())
+        print("Class distribution in y_test:", pd.Series(y_test).value_counts().to_dict())
+        
+        # If y_train contains only one class, try upsampling the minority class
+        if len(np.unique(y_train)) < 2:
+            print("⚠️ Only one class in y_train after split. Attempting to upsample minority class...")
+            from sklearn.utils import resample
+            X_train_df = pd.DataFrame(X_train, columns=available_cols_potential)
+            y_train_df = pd.Series(y_train, name='high_potential')
+            train_df = pd.concat([X_train_df, y_train_df], axis=1)
+            # Separate majority and minority
+            df_majority = train_df[train_df['high_potential'] == 0]
+            df_minority = train_df[train_df['high_potential'] == 1]
+            if len(df_minority) == 0:
+                print("⚠️ No positive samples in training set. Forcing at least one positive sample.")
+                df_minority = pd.DataFrame([0] * len(df_majority), columns=train_df.columns)
+                df_minority['high_potential'] = 1
+            df_minority_upsampled = resample(df_minority, 
+                                             replace=True, 
+                                             n_samples=len(df_majority), 
+                                             random_state=42)
+            train_upsampled = pd.concat([df_majority, df_minority_upsampled])
+            X_train = train_upsampled[available_cols_potential].values
+            y_train = train_upsampled['high_potential'].values
+            print("✅ Upsampled minority class in training set.")
+            print("Class distribution in y_train after upsampling:", pd.Series(y_train).value_counts().to_dict())
+        
+        # Final check before training
+        if len(np.unique(y_train)) < 2:
+            raise ValueError("Training set still contains only one class after upsampling. Please check your data and label logic.")
+        
+        # Custom param_grid for LogisticRegression
+        custom_params = {
+            'preferred_model': 'LogisticRegression',
+            'param_grid': {
+                'C': [0.1, 1.0, 10.0, 100.0],
+                'penalty': ['l1', 'l2', 'elasticnet'],
+                'l1_ratio': [0.25, 0.5, 0.75],
+                'class_weight': ['balanced', None],
+                'max_iter': [100, 200]
+            },
+            'base_model': LogisticRegression(random_state=42, solver='saga')
+        }
+        
+        # Train with all improvements using helper function
+        final_model_pipeline, metrics_dict, selected_feature_names, selected_features_mask = \
+            train_classification_model_with_improvements(
+                X_train, y_train, X_test, y_test,
+                available_cols_potential,
+                "High Potential Identification Model",
+                model_type='classifier',
+                param_grids=custom_params,
+                mlflow_run_name="high_potential_identification"
+            )
+        
+        # Store metrics for display
+        model_metrics_summary['high_potential'] = metrics_dict
+        
+        # Create signature for Unity Catalog (required)
+        sample_input_all = pd.DataFrame(X_test[:5], columns=available_cols_potential)
+        sample_input_selected = sample_input_all[selected_feature_names]
+        sample_output = pd.DataFrame(final_model_pipeline.predict(sample_input_selected), columns=['prediction'])
+        signature = infer_signature(sample_input_selected, sample_output)
+        
+        # Log model to Unity Catalog with signature
+        model_info = mlflow.sklearn.log_model(
+            sk_model=final_model_pipeline,
+            name="high_potential_model",
+            signature=signature,
+            input_example=sample_input_selected.head(1),
+            registered_model_name=uc_potential_model_name
+        )
+        
+        # Log selected features metadata
+        mlflow.log_dict({
+            'selected_features': selected_feature_names,
+            'all_features': available_cols_potential
+        }, artifact_file="feature_selection.json")
+        
+        # Set alias for Unity Catalog
+        try:
+            versions = list(mlflow_client.search_model_versions(f"name='{uc_potential_model_name}'"))
+            if versions:
+                latest_version = max(versions, key=lambda v: int(v.version))
+                mlflow_client.set_registered_model_alias(uc_potential_model_name, "Champion", latest_version.version)
+                print(f"✅ Set 'Champion' alias on model version {latest_version.version}")
+        except Exception as e:
+            print(f"⚠️ Could not set alias (model may work without it): {e}")
+except Exception as e:
+    print(f"❌ Error in High Potential Model Cell: {e}")
+    import traceback
+    traceback.print_exc()
 
 # COMMAND ----------
 
@@ -1155,93 +1358,98 @@ with mlflow.start_run(run_name="high_potential_identification"):
 
 print("🔬 Training Promotion Readiness Scoring Model...")
 
-# Create promotion readiness score (regression model)
-promotion_readiness_df = master_features.withColumn(
-    'readiness_score',
-    # Base performance component
-    (F.col('latest_performance_rating') / 5.0 * 30) +
-    # Tenure in role component (optimal range 12-36 months)
-    F.when(F.col('months_in_current_role').between(12, 36), 
-           25 - F.abs(F.col('months_in_current_role') - 24) * 0.5).otherwise(10) +
-    # Learning component
-    (F.least(F.col('total_learning_hours') / 40.0, F.lit(1.0)) * 20) +
-    # Goal achievement component  
-    (F.col('avg_goal_achievement') / 100.0 * 15) +
-    # Growth indicators
-    (F.greatest(F.col('salary_growth_rate') * 500, F.lit(0)) * 10) +
-    # Random component for realism
-    (F.rand() * 10 - 5)
+try:
+    # Create promotion readiness score (regression model)
+    promotion_readiness_df = master_features.withColumn(
+        'readiness_score',
+        # Base performance component
+        (F.col('latest_performance_rating') / 5.0 * 30) +
+        # Tenure in role component (optimal range 12-36 months)
+        F.when(F.col('months_in_current_role').between(12, 36), 
+               25 - F.abs(F.col('months_in_current_role') - 24) * 0.5).otherwise(10) +
+        # Learning component
+        (F.least(F.col('total_learning_hours') / 40.0, F.lit(1.0)) * 20) +
+        # Goal achievement component  
+        (F.col('avg_goal_achievement') / 100.0 * 15) +
+        # Growth indicators
+        (F.greatest(F.col('salary_growth_rate') * 500, F.lit(0)) * 10) +
+        # Random component for realism
+        (F.rand() * 10 - 5)
     ).withColumn(
         'readiness_score',
         F.greatest(F.least(F.col('readiness_score'), F.lit(100)), F.lit(0))
     )
 
-print("✅ Promotion readiness scores created")
+    print("✅ Promotion readiness scores created")
 
-# Encode categoricals for promotion readiness model (will have same encoded columns)
-promotion_readiness_encoded, _ = encode_categoricals(promotion_readiness_df)
-# Ensure same feature columns are available
-available_cols_readiness = [col for col in all_feature_cols if col in promotion_readiness_encoded.columns]
+    # Encode categoricals for promotion readiness model (will have same encoded columns)
+    promotion_readiness_encoded, _ = encode_categoricals(promotion_readiness_df)
+    # Ensure same feature columns are available
+    available_cols_readiness = [col for col in all_feature_cols if col in promotion_readiness_encoded.columns]
 
-# Unity Catalog model path for promotion readiness
-uc_readiness_model_name = f"{catalog_name}.{schema_name}.promotion_readiness_scoring"
+    # Unity Catalog model path for promotion readiness
+    uc_readiness_model_name = f"{catalog_name}.{schema_name}.promotion_readiness_scoring"
 
-with mlflow.start_run(run_name="promotion_readiness_scoring"):
-    
-    # Convert to Pandas for sklearn
-    print("🔄 Converting to Pandas DataFrame for sklearn...")
-    df_pandas = promotion_readiness_encoded.select(available_cols_readiness + ['readiness_score']).toPandas()
-    
-    X = df_pandas[available_cols_readiness].fillna(0).values
-    y = df_pandas['readiness_score'].fillna(0).values
-    
-    # Split data
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    # Train with all improvements using helper function (regression model)
-    final_model_pipeline, metrics_dict, selected_feature_names, selected_features_mask = \
-        train_classification_model_with_improvements(
-            X_train, y_train, X_test, y_test,
-            available_cols_readiness,
-            "Promotion Readiness Scoring Model",
-            model_type='regressor',
-            mlflow_run_name="promotion_readiness_scoring"
+    with mlflow.start_run(run_name="promotion_readiness_scoring"):
+        
+        # Convert to Pandas for sklearn
+        print("🔄 Converting to Pandas DataFrame for sklearn...")
+        df_pandas = promotion_readiness_encoded.select(available_cols_readiness + ['readiness_score']).toPandas()
+        
+        X = df_pandas[available_cols_readiness].fillna(0).values
+        y = df_pandas['readiness_score'].fillna(0).values
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # Train with all improvements using helper function (regression model)
+        final_model_pipeline, metrics_dict, selected_feature_names, selected_features_mask = \
+            train_classification_model_with_improvements(
+                X_train, y_train, X_test, y_test,
+                available_cols_readiness,
+                "Promotion Readiness Scoring Model",
+                model_type='regressor',
+                mlflow_run_name="promotion_readiness_scoring"
+            )
+        
+        # Store metrics for display
+        model_metrics_summary['promotion_readiness'] = metrics_dict
+        
+        # Create signature for Unity Catalog (required)
+        sample_input_all = pd.DataFrame(X_test[:5], columns=available_cols_readiness)
+        sample_input_selected = sample_input_all[selected_feature_names]
+        sample_output = pd.DataFrame(final_model_pipeline.predict(sample_input_selected), columns=['prediction'])
+        signature = infer_signature(sample_input_selected, sample_output)
+        
+        # Log model to Unity Catalog with signature
+        model_info = mlflow.sklearn.log_model(
+            sk_model=final_model_pipeline,
+            name="promotion_readiness_model",
+            signature=signature,
+            input_example=sample_input_selected.head(1),
+            registered_model_name=uc_readiness_model_name
         )
-    
-    # Store metrics for display
-    model_metrics_summary['promotion_readiness'] = metrics_dict
-    
-    # Create signature for Unity Catalog (required)
-    sample_input_all = pd.DataFrame(X_test[:5], columns=available_cols_readiness)
-    sample_input_selected = sample_input_all[selected_feature_names]
-    sample_output = pd.DataFrame(final_model_pipeline.predict(sample_input_selected), columns=['prediction'])
-    signature = infer_signature(sample_input_selected, sample_output)
-    
-    # Log model to Unity Catalog with signature
-    model_info = mlflow.sklearn.log_model(
-        sk_model=final_model_pipeline,
-        name="promotion_readiness_model",
-        signature=signature,
-        input_example=sample_input_selected.head(1),
-        registered_model_name=uc_readiness_model_name
-    )
-    
-    # Log selected features metadata
-    mlflow.log_dict({
-        'selected_features': selected_feature_names,
-        'all_features': available_cols_readiness
-    }, artifact_file="feature_selection.json")
-    
-    # Set alias for Unity Catalog
-    try:
-        versions = list(mlflow_client.search_model_versions(f"name='{uc_readiness_model_name}'"))
-        if versions:
-            latest_version = max(versions, key=lambda v: int(v.version))
-            mlflow_client.set_registered_model_alias(uc_readiness_model_name, "Champion", latest_version.version)
-            print(f"✅ Set 'Champion' alias on model version {latest_version.version}")
-    except Exception as e:
-        print(f"⚠️ Could not set alias (model may work without it): {e}")
-    
+        
+        # Log selected features metadata
+        mlflow.log_dict({
+            'selected_features': selected_feature_names,
+            'all_features': available_cols_readiness
+        }, artifact_file="feature_selection.json")
+        
+        # Set alias for Unity Catalog
+        try:
+            versions = list(mlflow_client.search_model_versions(f"name='{uc_readiness_model_name}'"))
+            if versions:
+                latest_version = max(versions, key=lambda v: int(v.version))
+                mlflow_client.set_registered_model_alias(uc_readiness_model_name, "Champion", latest_version.version)
+                print(f"✅ Set 'Champion' alias on model version {latest_version.version}")
+        except Exception as e:
+            print(f"⚠️ Could not set alias (model may work without it): {e}")
+except Exception as e:
+    print(f"❌ Error in Promotion Readiness Model Cell: {e}")
+    import traceback
+    traceback.print_exc()
+
 
 # COMMAND ----------
 

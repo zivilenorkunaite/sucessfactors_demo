@@ -905,9 +905,15 @@ def load_employees_from_data_product(generated_employees=None):
              .when(F.expr("try_cast(employmentType as int)") == 3638, "Contract")
              .when(F.col("employmentType").isNull(), DEFAULT_EMPLOYMENT_TYPE)  # Explicit NULL handling
              .otherwise(DEFAULT_EMPLOYMENT_TYPE).alias("employment_type"),
-            F.coalesce(F.expr("try_cast(annualSalary as int)"), F.lit(DEFAULT_SALARY)).alias("base_salary"),  # Default to 0 if invalid
-            F.coalesce(F.expr("try_cast(totalOrgTenureCalc / 30 as int)"), F.lit(DEFAULT_TENURE_MONTHS)).alias("tenure_months"),  # Default to 0 if invalid
-            F.coalesce(F.expr("try_cast(totalPositionTenureCalc / 30 as int)"), F.lit(DEFAULT_TENURE_MONTHS)).alias("months_in_current_role"),  # Default to 0 if invalid
+            F.when(
+                F.col("annualSalary").isNotNull(),
+                F.expr("try_cast(annualSalary as int)")
+            ).when(
+                (F.col("minimumPay").isNotNull()) & (F.col("maximumPay").isNotNull()),
+                F.expr("cast(floor(rand() * (try_cast(maximumPay as int) - try_cast(minimumPay as int) + 1)) + try_cast(minimumPay as int) as int)")
+            ).otherwise(F.lit(DEFAULT_SALARY)).alias("base_salary"),
+            F.coalesce(F.expr("try_cast(totalOrgTenureCalc as int)"), F.lit(DEFAULT_TENURE_MONTHS)).alias("tenure_months"),  # Default to 0 if invalid
+            F.coalesce(F.expr("try_cast(totalPositionTenureCalc  as int)"), F.lit(DEFAULT_TENURE_MONTHS)).alias("months_in_current_role"),  # Default to 0 if invalid
             # Normalize employment status: map 'A', 'ACTIVE', 'ACT' to 'Active' for consistency
             F.when(F.upper(F.trim(F.col("employmentStatus"))).isin(['A', 'ACTIVE', 'ACT']), 'Active')
              .otherwise(F.col("employmentStatus")).alias("employment_status"),
@@ -1027,29 +1033,37 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
         Spark DataFrame with performance reviews data (from DP or generated)
     """
     print("📊 Loading performance reviews from SAP SuccessFactors Data Product...")
-    print("   Source: performance_reviews_dp.performancereviews.commentfeedback")
+    print("   Source: performance_data_dp.performancedata.performancedata")
     try:
         performance_df_raw = spark.sql(
-            "SELECT * FROM performance_reviews_dp.performancereviews.commentfeedback"
+            "SELECT * FROM performance_data_dp.performancedata.performancedata"
         )
         
         record_count = performance_df_raw.count()
-        print(f"✅ Successfully loaded {record_count:,} performance review records from DATA PRODUCT")
+        print(f"✅ Successfully loaded {record_count:,} performance records from DATA PRODUCT")
         print(f"   📦 Data Source: SAP SuccessFactors Data Product (Delta Sharing)")
+        
+        # Deduplicate: Keep only the latest review per employee_id based on reviewPeriodEndDt
+        if "reviewPeriodEndDt" in performance_df_raw.columns:
+            window_spec = Window.partitionBy("userId").orderBy(F.col("reviewPeriodEndDt").desc())
+            performance_df_raw = performance_df_raw.withColumn("row_num", F.row_number().over(window_spec)) \
+                                                 .filter(F.col("row_num") == 1) \
+                                                 .drop("row_num")
+            print(f"   ✅ Deduplicated to {performance_df_raw.count():,} unique employee reviews (by max reviewPeriodEndDt)")
         
         # Map columns to expected names
         # Use try_cast to handle malformed values
         performance_df = performance_df_raw.select(
-            F.col("subject_8995a2862a8343bd8390aaa82c46e881").alias("employee_id"),
-            F.col("modifiedAt").alias("review_date"),
-            F.coalesce(F.expr("try_cast(numberValue as double)"), F.lit(DEFAULT_RATING)).alias("overall_rating"),  # Default to 3.0 if invalid
-            F.coalesce(F.expr("try_cast(numberValue as double)"), F.lit(DEFAULT_RATING)).alias("competency_rating"),  # Default to 3.0 if invalid
-            F.coalesce(F.expr("try_cast(numberValue * 20 as int)"), F.lit(DEFAULT_GOALS_ACHIEVEMENT)).alias("goals_achievement"),  # Default to 60 if invalid
-            F.col("id").cast("string").alias("review_id"),
-            F.coalesce(F.expr("try_cast(year(modifiedAt) as int)"), F.lit(DEFAULT_REVIEW_YEAR)).alias("review_period"),  # Default to 2024 if invalid
+            F.col("userId").alias("employee_id"),
+            F.col("reviewPeriodEndDt").alias("review_date"),
+            F.coalesce(F.expr("try_cast(currentPerformanceRating as double)"), F.lit(DEFAULT_RATING)).alias("overall_rating"),  # Default to 3.0 if invalid
+            F.coalesce(F.expr("try_cast(normalizedCurrentPerformanceRating as double)"), F.lit(DEFAULT_RATING)).alias("competency_rating"),  # Default to 3.0 if invalid
+            F.coalesce(F.expr("try_cast(normalizedCurrentPerformanceRating * 20 as int)"), F.lit(DEFAULT_GOALS_ACHIEVEMENT)).alias("goals_achievement"),  # Default to 60 if invalid
+            F.col("feedbackId").cast("string").alias("review_id"),
+            F.coalesce(F.expr("try_cast(year(reviewPeriodStartDt) as int)"), F.lit(DEFAULT_REVIEW_YEAR)).alias("review_period"),  # Default to 2024 if invalid
             F.lit(None).cast("string").alias("reviewer_id"),
             F.lit(COMPLETION_STATUS_COMPLETED).alias("status")
-        ).filter(F.col("numberValue").isNotNull() & (F.col("numberValue") > 0))
+        ).filter(F.col("currentPerformanceRating").isNotNull() & (F.col("numberValue") > 0))
         
         final_count = performance_df.count()
         print(f"✅ Transformed performance data: {final_count:,} records")
@@ -1094,163 +1108,6 @@ def load_performance_from_data_product(generated_performance_reviews=None, emplo
         print(f"✅ Using generated performance reviews data: {final_count:,} records")
         print(f"   📊 Final Status: Using GENERATED data (fallback)")
         return performance_df, 'GENERATED'  # Return source indicator
-
-
-def load_learning_from_data_product(generated_learning_records=None, employees=None, performance_reviews=None):
-    """
-    Load learning records from SAP SuccessFactors Data Product.
-    Falls back to generated data if data product load fails.
-    
-    Args:
-        generated_learning_records: Optional list of generated learning record dicts for fallback
-        employees: Optional list of employee dicts (needed if generating fallback)
-        performance_reviews: Optional list of performance review dicts (needed if generating fallback)
-        
-    Returns:
-        Spark DataFrame with learning records data (from DP or generated)
-    """
-    print("📊 Loading learning records from SAP SuccessFactors Data Product...")
-    print("   Source: learning_history_dp.learninghistory.learningcompletion")
-    try:
-        learning_df_raw = spark.sql(
-            "SELECT * FROM learning_history_dp.learninghistory.learningcompletion"
-        )
-        
-        record_count = learning_df_raw.count()
-        print(f"✅ Successfully loaded {record_count:,} learning records from DATA PRODUCT")
-        print(f"   📦 Data Source: SAP SuccessFactors Data Product (Delta Sharing)")
-        
-        # Map completionStatusID to completion_status string
-        learning_df = learning_df_raw.withColumn(
-            "completion_status",
-            F.when(F.col("completionStatusID") == COMPLETION_STATUS_ID_COMPLETED, COMPLETION_STATUS_COMPLETED)
-             .when(F.col("completionStatusID") == COMPLETION_STATUS_ID_IN_PROGRESS, COMPLETION_STATUS_IN_PROGRESS)
-             .when(F.col("completionStatusID") == COMPLETION_STATUS_ID_NOT_STARTED, COMPLETION_STATUS_NOT_STARTED)
-             .when(F.col("completionStatusID").isNull(), COMPLETION_STATUS_NOT_STARTED)
-             .when(F.lower(F.col("completionStatusID")).contains("complete"), COMPLETION_STATUS_COMPLETED)
-             .when(F.lower(F.col("completionStatusID")).contains("progress"), COMPLETION_STATUS_IN_PROGRESS)
-             .otherwise(COMPLETION_STATUS_NOT_STARTED)
-        )
-        
-        # Map userID to employee_id
-        learning_df = learning_df.withColumn(
-            "employee_id",
-            F.coalesce(
-                F.col("userID"),
-                F.col("personId"),
-                F.col("subject_8995a2862a8343bd8390aaa82c46e881")
-            )
-        )
-        
-        # Derive category from learningItemType
-        learning_df = learning_df.withColumn(
-            "category",
-            F.when(F.lower(F.col("learningItemType")).contains("technical"), LEARNING_CATEGORY_KEYWORDS["technical"])
-             .when(F.lower(F.col("learningItemType")).contains("leadership"), LEARNING_CATEGORY_KEYWORDS["leadership"])
-             .when(F.lower(F.col("learningItemType")).contains("communication"), LEARNING_CATEGORY_KEYWORDS["communication"])
-             .when(F.lower(F.col("learningItemType")).contains("project"), LEARNING_CATEGORY_KEYWORDS["project"])
-             .when(F.lower(F.col("learningItemType")).contains("data"), LEARNING_CATEGORY_KEYWORDS["data"])
-             .when(F.lower(F.col("learningItemType")).contains("product"), LEARNING_CATEGORY_KEYWORDS["product"])
-             .when(F.lower(F.col("learningItemType")).contains("sales"), LEARNING_CATEGORY_KEYWORDS["sales"])
-             .when(F.lower(F.col("learningItemType")).contains("compliance"), LEARNING_CATEGORY_KEYWORDS["compliance"])
-             .when(F.col("courseId").isNotNull(), LEARNING_CATEGORY_KEYWORDS["technical"])
-             .when(F.col("programId").isNotNull(), LEARNING_CATEGORY_KEYWORDS["leadership"])
-             .otherwise("General Training")
-        )
-        
-        # Use learningCompletionEventSysGUID as learning_id
-        learning_df = learning_df.withColumn(
-            "learning_id",
-            F.coalesce(
-                F.col("learningCompletionEventSysGUID"),
-                F.col("componentID"),
-                F.concat(F.lit("LRN"), F.col("componentKey").cast("string"))
-            )
-        )
-        
-        # Map totalHours to hours_completed
-        # Use try_cast to handle malformed values
-        learning_df = learning_df.withColumn(
-            "hours_completed",
-            F.coalesce(
-                F.expr("try_cast(totalHours as int)"),
-                F.expr("try_cast((coalesce(creditHours, 0) + coalesce(cpeHours, 0) + coalesce(contactHours, 0)) as int)"),
-                F.lit(0)
-            )
-        )
-        
-        # Score is not available, set to NULL
-        learning_df = learning_df.withColumn("score", F.lit(None).cast("integer"))
-        
-        # Map completionDate
-        learning_df = learning_df.withColumn(
-            "completion_date",
-            F.coalesce(
-                F.col("completionDate"),
-                F.col("revisionDate"),
-                F.col("lastUpdatedTimestamp")
-            )
-        )
-        
-        # Select and rename columns to match expected schema
-        learning_df = learning_df.select(
-            F.col("learning_id").alias("learning_id"),
-            F.col("employee_id").alias("employee_id"),
-            F.col("category").alias("category"),
-            F.col("completion_date").alias("completion_date"),
-            F.col("hours_completed").alias("hours_completed"),
-            F.col("completion_status").alias("completion_status"),
-            F.col("score").alias("score"),
-            F.col("componentID").alias("component_id"),
-            F.col("courseId").alias("course_id"),
-            F.col("programId").alias("program_id"),
-            F.col("learningItemType").alias("learning_item_type")
-        )
-        
-        # Filter out records with null employee_id
-        learning_df = learning_df.filter(F.col("employee_id").isNotNull())
-        
-        final_count = learning_df.count()
-        print(f"✅ Transformed learning data: {final_count:,} records")
-        print(f"   📊 Final Status: Using DATA PRODUCT data")
-        return learning_df, 'DATA PRODUCT'  # Return source indicator
-        
-    except Exception as e:
-        print(f"⚠️ Error loading learning from data product: {e}")
-        print(f"   🔄 FALLBACK: Switching to generated learning records data...")
-        print(f"   📦 Data Source: Generated (simulated)")
-        
-        # Fallback to generated data - generate only when needed
-        if generated_learning_records is None:
-            if employees is None:
-                print("   → Generating employees data (on-demand)...")
-                employees = generate_employees()
-            if performance_reviews is None:
-                print("   → Generating performance reviews data (on-demand)...")
-                performance_reviews = generate_performance_reviews(employees)
-            print("   → Generating learning records data (on-demand)...")
-            generated_learning_records = generate_learning_records(employees, performance_reviews)
-        
-        # Convert generated data to DataFrame with correct schema
-        learning_df_generated = spark.createDataFrame(generated_learning_records)
-        learning_df = learning_df_generated.select(
-            F.col("learning_id").alias("learning_id"),
-            F.col("employee_id").alias("employee_id"),
-            F.col("category").alias("category"),
-            F.col("completion_date").alias("completion_date"),
-            F.col("hours_completed").cast("integer").alias("hours_completed"),
-            F.col("completion_status").alias("completion_status"),
-            F.when(F.col("score").isNotNull(), F.col("score").cast("integer")).otherwise(None).alias("score"),
-            F.lit(None).cast("string").alias("component_id"),
-            F.lit(None).cast("string").alias("course_id"),
-            F.lit(None).cast("string").alias("program_id"),
-            F.lit(None).cast("string").alias("learning_item_type")
-        )
-        
-        final_count = learning_df.count()
-        print(f"✅ Using generated learning records data: {final_count:,} records")
-        print(f"   📊 Final Status: Using GENERATED data (fallback)")
-        return learning_df, 'GENERATED'  # Return source indicator
 
 
 # ============================================================================

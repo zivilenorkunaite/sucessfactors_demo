@@ -1403,11 +1403,22 @@ def init_environment(catalog_name,schema_name, displayHTML, spark):
     return mlflow_client, employees_df
 
 
-def get_alex_data(employees_df, displayHTML):
-    # Find our demo employee Alex Smith
+def get_demo_employee_data(employees_df, displayHTML):
+    # Try to find our generated employee first
     alex_data = employees_df.filter(
         (F.col("first_name") == "Alex") & (F.col("last_name") == "Smith")
     ).collect()
+
+    # try to get example from our Success Factors DP
+    if not alex_data:
+        alex_data = employees_df.filter(
+            F.col("employee_id") == '101002'
+        ).collect()
+
+    # if still not found - just take a first one from the datasert
+
+    if not alex_data:
+        alex_data = [employees_df.first()]
 
     if alex_data:
         alex = alex_data[0]
@@ -1575,8 +1586,8 @@ def build_context_summary(context, question=""):
     return f"{context}\n\nNote: This is descriptive context. Actual employee data is queried from SAP SuccessFactors tables when available."
 
 # Helper function to build Alex's context for AI queries
-def build_alex_context(alex_data, catalog_name, schema_name, spark):
-    """Build context from Alex Smith's actual data in the tables"""
+def build_demo_employee_context(alex_data, catalog_name, schema_name, spark):
+    """Build context from actual data in the tables"""
     if not alex_data or len(alex_data) == 0:
         return None
     
@@ -1825,7 +1836,7 @@ def generate_career_predictions(employee_data,career_models,employees_df,display
     
     return sorted(predictions, key=lambda x: x['probability'], reverse=True)
 
-def get_alex_career_predictions(alex_data, career_models, employees_df, displayHTML, spark,catalog_name, schema_name):
+def get_demo_employees_career_predictions(alex_data, career_models, employees_df, displayHTML, spark,catalog_name, schema_name):
     print("🔮 Generating career path predictions for Alex Smith...")
     print(f"   Models loaded: {list(career_models.keys()) if career_models else 'None'}")
     
